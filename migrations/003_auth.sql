@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS users (
     id            SERIAL PRIMARY KEY,
     email         VARCHAR(320) NOT NULL,
-    email_norm    VARCHAR(320) NOT NULL UNIQUE,        -- lower(trim(email))
+    email_norm    VARCHAR(320) NOT NULL,               -- lower(trim(email)); unicidade via indice abaixo
     password_hash TEXT NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -60,3 +60,11 @@ CREATE TABLE IF NOT EXISTS profile_progress (
     PRIMARY KEY (profile_id, cw_key)
 );
 CREATE INDEX IF NOT EXISTS pp_profile_updated_idx ON profile_progress(profile_id, updated_at DESC);
+
+-- Reconciliacao p/ bancos com schema de auth legado (idempotente; tabelas vazias).
+-- CREATE TABLE IF NOT EXISTS NAO altera tabelas que ja existem, entao garantimos as colunas aqui.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_norm VARCHAR(320);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE users ALTER COLUMN email_norm SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_norm_uidx ON users(email_norm);
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar VARCHAR(32);

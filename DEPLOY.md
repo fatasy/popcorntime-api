@@ -5,24 +5,46 @@
 **Domínio:** `popcorntime.fsops.com.br`  
 **Serviço:** `systemd` (`popcorntime-api.service`)
 
-## Deploy rápido
+## Fluxo de deploy (PC → GitHub → VPS)
 
-```bash
-# Na VPS
-cd /root/projetos/popcorntime-api && ./deploy.sh
+O código fonte fica no seu PC Windows (`C:\Users\MarceloV2\Code\chq\popcorntime-api`). O deploy segue 3 passos:
+
+### 1. Do PC: commit + push
+
+```powershell
+# No Windows (PowerShell)
+cd C:\Users\MarceloV2\Code\chq\popcorntime-api
+git add -A
+git commit -m "descrição das alterações"
+git push
 ```
 
-Ou via SSH de qualquer lugar:
+### 2. Da VPS: pull + restart
 
-```bash
-ssh root@5.189.130.23 'cd /root/projetos/popcorntime-api && ./deploy.sh'
+```powershell
+# Ainda no Windows, via SSH
+ssh root@5.189.130.23 "cd /root/projetos/popcorntime-api && ./deploy.sh"
 ```
+
+Ou em 1 linha só (commit + push + deploy):
+
+```powershell
+cd C:\Users\MarceloV2\Code\chq\popcorntime-api && git add -A && git commit -m "update" && git push && ssh root@5.189.130.23 "cd /root/projetos/popcorntime-api && ./deploy.sh"
+```
+
+### 3. Verificar
+
+```powershell
+ssh root@5.189.130.23 "systemctl status popcorntime-api --no-pager"
+```
+
+Ou acessar: `https://popcorntime.fsops.com.br/catalog?type=movies`
 
 ## O que o deploy.sh faz
 
 1. `git pull` — puxa alterações do GitHub
 2. `bun install --frozen-lockfile` — instala dependências
-3. `systemctl restart popcorntime-api` — reinicia o serviço
+3. `systemctl restart popcorntime-api` — reinicia o serviço (hot-reload, sem downtime)
 
 ## Comandos úteis
 

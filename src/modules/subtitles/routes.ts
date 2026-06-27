@@ -47,7 +47,11 @@ export const subtitleRoutes = new Elysia()
       }
 
       const results = await searchSubtitles(q)
-      const origin = new URL(request.url).origin
+      // Atrás de proxy TLS, request.url chega como http — respeite os headers encaminhados.
+      const u = new URL(request.url)
+      const proto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim() || u.protocol.replace(':', '')
+      const host = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim() || u.host
+      const origin = `${proto}://${host}`
       const data = results.map((r) => ({
         lang: r.lang,
         langLabel: r.langLabel,

@@ -3,6 +3,7 @@ import { cors } from '@elysiajs/cors'
 import { swagger } from '@elysiajs/swagger'
 import { env } from './env'
 import { catalogRoutes } from './modules/catalog/routes'
+import { subtitleRoutes } from './modules/subtitles/routes'
 
 export const app = new Elysia()
   .use(cors())
@@ -24,6 +25,7 @@ export const app = new Elysia()
   })
   .get('/health', () => ({ status: 'ok' }), { detail: { summary: 'Health check' } })
   .use(catalogRoutes)
+  .use(subtitleRoutes)
   .listen(env.PORT)
 
 console.log(`🍿 PopcornTime API running at http://localhost:${env.PORT} (docs: /swagger)`)

@@ -334,3 +334,56 @@ GET /catalog/267/episodes
 6. **Rate limiting:** A API não tem rate limit, mas o pipeline de coleta/enriquecimento atualiza a cada 6 horas. Conteúdo novo pode demorar até 6h para aparecer com metadados.
 
 7. **Cache no frontend:** Os dados mudam a cada ~6h (pipeline). Cache agressivo é recomendado.
+
+---
+
+## Legendas (multi-fonte, foco pt-BR)
+
+O backend agrega legendas de várias fontes (OpenSubtitles + SubDL), normaliza tudo para **UTF-8 WebVTT** (corrige gzip e encoding Latin-1/Windows-1252) e serve um arquivo limpo. A chave de API fica **só no backend**.
+
+### `GET /catalog/:id/subtitles` — listar legendas de um conteúdo
+
+**Query params:**
+
+| Parâmetro | Tipo | Descrição |
+|---|---|---|
+| `season` | number | Temporada (séries) |
+| `episode` | number | Episódio (séries) |
+| `lang` | string | Idiomas (csv, canônicos). Padrão: `pt-BR,pt-PT,en` |
+
+**Response (200):**
+```json
+{
+  "data": [
+    {
+      "lang": "pt-BR",
+      "langLabel": "Português (Brasil)",
+      "release": "The.Movie.2020.1080p.WEB-DL",
+      "downloads": 15234,
+      "hashMatch": false,
+      "hearingImpaired": false,
+      "provider": "opensubtitles",
+      "url": "https://popcorntime.fsops.com.br/subtitles/file/<token>/s.vtt"
+    }
+  ],
+  "meta": { "count": 1, "languages": ["pt-BR", "pt-PT", "en"] }
+}
+```
+
+Ranqueado: hash-match → pt-BR → pt-PT → en → mais baixadas. O frontend usa `url` direto no player (já é WebVTT UTF-8).
+
+**Response (503):** `{ "error": "Nenhum provedor de legenda configurado..." }` — falta `OPENSUBTITLES_API_KEY`.
+
+### `GET /subtitles/file/:token/s.vtt` — servir a legenda normalizada
+
+Baixa da fonte, descompacta, converte encoding → UTF-8, converte SRT → WebVTT e serve com `Content-Type: text/vtt`. O `token` vem da resposta acima (não montar à mão).
+
+### Variáveis de ambiente
+
+| Var | Obrigatória | Descrição |
+|---|---|---|
+| `OPENSUBTITLES_API_KEY` | p/ legendas | Registre grátis em opensubtitles.com → Perfil → API Consumers |
+| `OPENSUBTITLES_APP_NAME` | não | User-Agent próprio (default `fpopcorntime v1.0`) |
+| `OPENSUBTITLES_USERNAME` / `_PASSWORD` | não | Login eleva a cota de download (5/dia → 20/dia no free) |
+| `SUBDL_API_KEY` | não | Fonte secundária (subdl.com/panel/api) |
+| `SUBTITLE_LANGS` | não | Idiomas padrão (default `pt-BR,pt-PT,en`) |

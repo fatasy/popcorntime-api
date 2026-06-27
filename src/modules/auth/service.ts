@@ -75,8 +75,9 @@ export async function register(email: string, password: string): Promise<{ userI
     await db.insert(profiles).values({ user_id: userId, name: 'Perfil 1' })
     return { userId }
   } catch (e: any) {
-    // só uma violação real de UNIQUE vira 409; outros erros propagam (não mascarar)
-    if (e?.code === '23505') {
+    // só uma violação real de UNIQUE vira 409; Drizzle embrulha o erro do driver,
+    // então o SQLSTATE pode estar em e.cause.code. Outros erros propagam (não mascarar).
+    if (e?.code === '23505' || e?.cause?.code === '23505') {
       throw new AuthError(409, 'E-mail já cadastrado')
     }
     throw e

@@ -29,6 +29,8 @@ export const torrents = pgTable('torrents', {
   published_at: timestamp('published_at', { withTimezone: true }),
   collected_at: timestamp('collected_at', { withTimezone: true }).defaultNow(),
   last_seen_at: timestamp('last_seen_at', { withTimezone: true }).defaultNow(),
+  file_list: jsonb('file_list'),
+  quality_from_files: varchar('quality_from_files', { length: 32 }),
 })
 
 export const contents = pgTable('contents', {
@@ -54,6 +56,7 @@ export const contents = pgTable('contents', {
   enriched_at: timestamp('enriched_at', { withTimezone: true }),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+  last_gap_fill_at: timestamp('last_gap_fill_at', { withTimezone: true }),
 })
 
 export const content_torrents = pgTable(

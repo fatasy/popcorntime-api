@@ -5,7 +5,7 @@ export const USER_AGENT =
 
 // A normalized raw torrent as produced by every collection source.
 export interface RawTorrent {
-  source: string // 'tpb' | 'apibay'
+  source: string // 'tpb' | 'apibay' | 'eztv'
   hash: string // info hash, lower-cased
   title: string
   magnet_link: string
@@ -15,6 +15,8 @@ export interface RawTorrent {
   uploader: string | null
   category: string // our label: 'movies' | 'series' | 'anime'
   published_at: Date | null
+  season?: number
+  episode?: number
 }
 
 export interface ParsedRelease {

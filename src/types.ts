@@ -10,6 +10,7 @@ import {
   decimal,
   jsonb,
   primaryKey,
+  uuid,
 } from 'drizzle-orm/pg-core'
 
 // NOTE: these tables ALREADY exist in the database. These Drizzle definitions
@@ -122,3 +123,88 @@ export type Content = typeof contents.$inferSelect
 export type NewContent = typeof contents.$inferInsert
 export type ContentTorrent = typeof content_torrents.$inferSelect
 export type NewContentTorrent = typeof content_torrents.$inferInsert
+
+// ─── Auth: contas, perfis, refresh tokens (criadas por migrations/003_auth.sql) ───
+
+export const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  email: varchar('email', { length: 320 }).notNull(),
+  email_norm: varchar('email_norm', { length: 320 }).notNull().unique(),
+  password_hash: text('password_hash').notNull(),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+})
+
+export const profiles = pgTable(
+  'profiles',
+  {
+    id: serial('id').primaryKey(),
+    user_id: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: varchar('name', { length: 64 }).notNull(),
+    avatar: varchar('avatar', { length: 32 }),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  },
+)
+
+export const refresh_tokens = pgTable('refresh_tokens', {
+  id: serial('id').primaryKey(),
+  user_id: integer('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  token_hash: varchar('token_hash', { length: 64 }).notNull().unique(),
+  family_id: uuid('family_id').notNull(),
+  expires_at: timestamp('expires_at', { withTimezone: true }).notNull(),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  replaced_at: timestamp('replaced_at', { withTimezone: true }),
+  revoked_at: timestamp('revoked_at', { withTimezone: true }),
+})
+
+export const profile_favorites = pgTable(
+  'profile_favorites',
+  {
+    profile_id: integer('profile_id')
+      .notNull()
+      .references(() => profiles.id, { onDelete: 'cascade' }),
+    content_id: integer('content_id')
+      .notNull()
+      .references(() => contents.id, { onDelete: 'cascade' }),
+    title: varchar('title', { length: 512 }),
+    poster: text('poster'),
+    type: varchar('type', { length: 16 }),
+    year: integer('year'),
+    added_at: timestamp('added_at', { withTimezone: true }).defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.profile_id, table.content_id] })],
+)
+
+export const profile_progress = pgTable(
+  'profile_progress',
+  {
+    profile_id: integer('profile_id')
+      .notNull()
+      .references(() => profiles.id, { onDelete: 'cascade' }),
+    cw_key: text('cw_key').notNull(),
+    content_id: integer('content_id').references(() => contents.id, { onDelete: 'set null' }),
+    title: varchar('title', { length: 512 }).notNull(),
+    poster: text('poster'),
+    magnet: text('magnet').notNull(),
+    file_index: integer('file_index').notNull(),
+    position: integer('position').notNull(),
+    duration: integer('duration').notNull(),
+    season: integer('season'),
+    episode: integer('episode'),
+    deleted: boolean('deleted').notNull().default(false),
+    updated_at: timestamp('updated_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.profile_id, table.cw_key] })],
+)
+
+export type User = typeof users.$inferSelect
+export type NewUser = typeof users.$inferInsert
+export type Profile = typeof profiles.$inferSelect
+export type NewProfile = typeof profiles.$inferInsert
+export type RefreshToken = typeof refresh_tokens.$inferSelect
+export type ProfileFavorite = typeof profile_favorites.$inferSelect
+export type ProfileProgress = typeof profile_progress.$inferSelect

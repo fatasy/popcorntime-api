@@ -17,6 +17,16 @@ const envSchema = z.object({
   SUBDL_API_KEY: z.string().min(1).optional(),
   // Idiomas padrão da busca (canônicos), em ordem de preferência
   SUBTITLE_LANGS: z.string().default('pt-BR,pt-PT,en'),
+
+  // ─── Auth (contas + perfis) ───
+  // Segredo de assinatura do JWT (gere com: openssl rand -hex 32). Boot falha sem ele.
+  JWT_SECRET: z.string().min(32),
+  // Validade do access token (formato aceito pelo @elysiajs/jwt: '15m', '1h', etc.)
+  ACCESS_TTL: z.string().default('15m'),
+  // Validade do refresh token, em dias.
+  REFRESH_TTL_DAYS: z.coerce.number().default(30),
+  // CORS: CSV de origins permitidos. Vazio => origin:false (fecha browsers; app RN não envia Origin).
+  CORS_ORIGINS: z.string().default(''),
 })
 
 export const env = envSchema.parse(process.env)

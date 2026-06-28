@@ -34,6 +34,23 @@ function toProgress(row: typeof profile_progress.$inferSelect) {
   }
 }
 
+// Continuar assistindo: 1 item por série (mesmo content_id) — sempre o último visto.
+// As linhas chegam ordenadas por updated_at desc, então a 1ª de cada grupo é a mais
+// recente. content_id null (filmes/legado) cai no cw_key e fica individual.
+function dedupeLatestPerSeries(
+  rows: (typeof profile_progress.$inferSelect)[],
+): (typeof profile_progress.$inferSelect)[] {
+  const seen = new Set<string>()
+  const out: (typeof profile_progress.$inferSelect)[] = []
+  for (const row of rows) {
+    const groupKey = row.content_id != null ? `c:${row.content_id}` : `k:${row.cw_key}`
+    if (seen.has(groupKey)) continue
+    seen.add(groupKey)
+    out.push(row)
+  }
+  return out
+}
+
 // Campos de progresso (== ContinueItem sem `key`, com `deleted` opcional p/ soft-delete).
 const PROGRESS_FIELDS = {
   title: t.String(),
@@ -122,7 +139,7 @@ export const libraryRoutes = new Elysia({ prefix: '/me' })
       .from(profile_progress)
       .where(and(eq(profile_progress.profile_id, r.profileId), eq(profile_progress.deleted, false)))
       .orderBy(desc(profile_progress.updated_at))
-    return { favorites: favs.map(toFav), progress: prog.map(toProgress) }
+    return { favorites: favs.map(toFav), progress: dedupeLatestPerSeries(prog).map(toProgress) }
   }, { detail: { summary: 'Lista + progresso do perfil', tags: ['library'] } })
   // PUT /me/favorites/:contentId — adiciona à lista (idempotente)
   .put(

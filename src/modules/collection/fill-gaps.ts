@@ -98,6 +98,9 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
       `[fillGaps] "${seriesTitle}": ${totalMissing} missing episode(s) across ${gaps.length} season(s)`,
     )
 
+    // SolidTorrents cache for this series to avoid duplicate API calls
+    const solidCache = new Map<string, RawTorrent[]>()
+
     // 2c. Get imdb_id (required for EZTV)
     if (!series.imdb_id) {
       console.warn(`[fillGaps] "${seriesTitle}": no imdb_id, skipping`)
@@ -144,6 +147,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
         const query = `${seriesTitle} S${seasonStr}E${episodeStr}`
         try {
           const solidResults = await searchSolidTorrents(query, 50)
+          solidCache.set(query, solidResults)
           const solidMatches = solidResults
             .filter((t) => {
               if (isPack(t.title)) return false
@@ -191,16 +195,50 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
           // Episode still missing — nothing to add
         }
 
-        // 2s delay between SolidTorrents API calls
-        await new Promise((r) => setTimeout(r, 2_000))
+        // Rate limiting is now handled inside searchSolidTorrents (max 1 req/2s)
       }
     }
 
     // 2f. Also search for season packs (4K/2160p) that cover all episodes
-    // These complement per-episode torrents with higher quality options
+    // These complement per-episode torrents with higher quality options.
+    // Reuse cached per-episode SolidTorrents results when possible to
+    // avoid a redundant API call for the same series+season.
     try {
       const packQuery = `${seriesTitle} S${padTwo(gaps[0]!.season)} 2160p`
-      const packResults = await searchSolidTorrents(packQuery, 30)
+
+      let packResults: RawTorrent[]
+      if (solidCache.has(packQuery)) {
+        packResults = solidCache.get(packQuery)!
+      } else {
+        // Collect unique results from all per-episode searches for this series
+        const uniqueHashes = new Map<string, RawTorrent>()
+        for (const cachedResults of Array.from(solidCache.values())) {
+          for (const t of cachedResults) {
+            if (!uniqueHashes.has(t.hash)) {
+              uniqueHashes.set(t.hash, t)
+            }
+          }
+        }
+
+        // Check if any cached results already include viable packs
+        const cachedPacks = Array.from(uniqueHashes.values()).filter((t) => {
+          if (!isPack(t.title)) return false
+          if ((t.seeds ?? 0) < 1) return false
+          return /2160|4k|uhd/i.test(t.title)
+        })
+
+        if (cachedPacks.length > 0) {
+          console.log(
+            `[fillGaps] reusing ${cachedPacks.length} cached pack(s) from per-episode searches`,
+          )
+          packResults = cachedPacks
+        } else {
+          // Fall back to a dedicated API call and cache it
+          packResults = await searchSolidTorrents(packQuery, 30)
+          solidCache.set(packQuery, packResults)
+        }
+      }
+
       const viablePacks = packResults.filter((t) => {
         if (!isPack(t.title)) return false
         if ((t.seeds ?? 0) < 1) return false
@@ -218,7 +256,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
         }
       }
       if (viablePacks.length > 0) {
-        console.log(`[fillGaps] \"${seriesTitle}\": found ${viablePacks.length} season pack(s)`)
+        console.log(`[fillGaps] "${seriesTitle}": found ${viablePacks.length} season pack(s)`)
       }
     } catch (err) {
       console.warn(`[fillGaps] Season pack search failed:`, (err as Error).message)

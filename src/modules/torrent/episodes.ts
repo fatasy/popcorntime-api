@@ -1,7 +1,8 @@
-import { and, asc, eq, isNull } from 'drizzle-orm'
+import { and, asc, eq, isNull, sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { contents, content_torrents, torrents, torrent_episodes } from '../../types'
+import { contents, content_torrents, torrents, torrent_episodes, metadata_cache } from '../../types'
 import { getTV, getSeasonEpisodes } from '../enrichment/tmdb'
+import * as aniskip from '../enrichment/aniskip'
 import { parseRelease } from '../../lib/parse'
 import { classifySeasonCoverage, type SeasonCoverage } from './season-coverage'
 import { extractQualityLabel } from './quality'
@@ -19,12 +20,28 @@ export interface EpisodeTorrent {
   size_bytes: number | null
 }
 
+/**
+ * Marcadores de tempo do episódio (em segundos), para "Pular abertura" e para
+ * disparar o card "Próximo episódio" no início real dos créditos (não em
+ * `duração − 60s`). Camadas, da mais precisa p/ a mais grosseira:
+ *  - `aniskip`: abertura + créditos exatos (anime, via mal_id)
+ *  - `tmdb`:    apenas `runtime_sec` (duração esperada do episódio) como hint
+ * O app ainda pode preferir os chapters do próprio arquivo quando existirem.
+ */
+export interface EpisodeMarkers {
+  intro?: { start: number; end: number } | null
+  credits?: { start: number } | null
+  runtime_sec?: number | null
+  source: 'aniskip' | 'tmdb' | 'mixed'
+}
+
 export interface EpisodeInfo {
   season: number
   episode: number
   title: string | null
   air_date: string | null
   torrents: EpisodeTorrent[]
+  markers?: EpisodeMarkers | null
 }
 
 interface LinkedTorrent {
@@ -32,7 +49,7 @@ interface LinkedTorrent {
   hash: string
   magnet_link: string
   title: string
-  seeds: number
+  seeds: number | null
   size_bytes: number | null
   season: number | null
   episode: number | null
@@ -71,7 +88,7 @@ function makeEpisodeTorrent(
 export async function resolveEpisodes(contentId: number): Promise<EpisodeInfo[]> {
   // 1. Load content
   const [content] = await db
-    .select({ type: contents.type, tmdb_id: contents.tmdb_id, title: contents.title })
+    .select({ type: contents.type, tmdb_id: contents.tmdb_id, mal_id: contents.mal_id, title: contents.title })
     .from(contents)
     .where(eq(contents.id, contentId))
     .limit(1)
@@ -95,21 +112,30 @@ export async function resolveEpisodes(contentId: number): Promise<EpisodeInfo[]>
     .innerJoin(torrents, eq(torrents.id, content_torrents.torrent_id))
     .where(eq(content_torrents.content_id, contentId))
 
-  // 3. Try TMDB strategy first
+  // 3. Resolve episodes (TMDB first, heuristic fallback)
+  let episodes: EpisodeInfo[]
   if (content.tmdb_id) {
     try {
-      return await resolveWithTmdb(contentId, content.tmdb_id, linked)
+      episodes = await resolveWithTmdb(contentId, content.tmdb_id, linked)
     } catch (err) {
       console.warn(
         `[episodes] TMDB resolution failed for content ${contentId} (tmdb:${content.tmdb_id}):`,
         (err as Error).message,
       )
-      // Fall through to heuristic
+      episodes = resolveHeuristic(linked)
     }
+  } else {
+    episodes = resolveHeuristic(linked)
   }
 
-  // 4. Heuristic fallback
-  return resolveHeuristic(linked)
+  // 4. Best-effort: anexa marcadores de abertura/créditos via AniSkip (anime com
+  //    mal_id). Cacheado em metadata_cache; o runtime do TMDB já foi anexado em
+  //    resolveWithTmdb. Nunca lança — marcadores são um "nice to have".
+  if (content.mal_id) {
+    await attachAniskipMarkers(content.mal_id, episodes)
+  }
+
+  return episodes
 }
 
 // ─── Strategy A: TMDB ─────────────────────────────────────────────────────
@@ -123,7 +149,10 @@ async function resolveWithTmdb(
   const tv = await getTV(tmdbId)
 
   // Build a map of (season, episode) → TMDB episode data
-  const tmdbEpisodes = new Map<string, { title: string | null; air_date: string | null }>()
+  const tmdbEpisodes = new Map<
+    string,
+    { title: string | null; air_date: string | null; runtime: number | null }
+  >()
 
   // Fetch each season's episode list in parallel
   const seasons = tv.seasons ?? []
@@ -138,6 +167,7 @@ async function resolveWithTmdb(
           tmdbEpisodes.set(key, {
             title: ep.name ?? null,
             air_date: ep.air_date ?? null,
+            runtime: typeof ep.runtime === 'number' ? ep.runtime : null,
           })
         }
       } catch (err) {
@@ -272,12 +302,14 @@ async function resolveWithTmdb(
     const season = parseInt(seasonStr!, 10)
     const episode = parseInt(episodeStr!, 10)
     const tmdb = tmdbEpisodes.get(key)
+    const runtimeSec = tmdb?.runtime ? tmdb.runtime * 60 : null
     result.push({
       season,
       episode,
       title: tmdb?.title ?? null,
       air_date: tmdb?.air_date ?? null,
       torrents: episodeTorrents.sort((a, b) => b.seeds - a.seeds),
+      markers: runtimeSec ? { runtime_sec: runtimeSec, source: 'tmdb' } : null,
     })
   }
 
@@ -324,6 +356,62 @@ function resolveHeuristic(linked: LinkedTorrent[]): EpisodeInfo[] {
 
   result.sort((a, b) => a.season - b.season || a.episode - b.episode)
   return result
+}
+
+// ─── Marcadores: AniSkip (abertura/créditos) ───────────────────────────────
+
+/** Lê do metadata_cache; busca no AniSkip e cacheia (incl. "vazio") em miss. */
+async function cachedAniskip(
+  malId: number,
+  episode: number,
+): Promise<aniskip.AniSkipMarkers | null> {
+  const key = `${malId}:${episode}`
+  const rows = await db
+    .select({ response: metadata_cache.response })
+    .from(metadata_cache)
+    .where(and(eq(metadata_cache.source, 'aniskip'), eq(metadata_cache.lookup_key, key)))
+    .limit(1)
+  if (rows[0]?.response) {
+    const r = rows[0].response as aniskip.AniSkipMarkers & { _none?: boolean }
+    return r._none ? null : r
+  }
+
+  const fetched = await aniskip.getSkipTimes(malId, episode, 0)
+  // Cacheia inclusive o "não encontrado" (_none) p/ não re-bater no 404 a cada request.
+  const toStore = fetched ?? { _none: true }
+  await db
+    .insert(metadata_cache)
+    .values({ source: 'aniskip', lookup_key: key, response: toStore })
+    .onConflictDoUpdate({
+      target: [metadata_cache.source, metadata_cache.lookup_key],
+      set: { response: toStore, cached_at: sql`now()` },
+    })
+  return fetched
+}
+
+/**
+ * Anexa abertura/créditos do AniSkip a cada episódio (best-effort).
+ * Nota: o AniSkip indexa por número de episódio do MAL (geralmente por cour/
+ * temporada). Para séries multi-temporada sob um único mal_id o casamento é
+ * aproximado — por isso é só um marcador, com fallback no app.
+ */
+async function attachAniskipMarkers(malId: number, episodes: EpisodeInfo[]): Promise<void> {
+  for (const ep of episodes) {
+    if (ep.season === 0 || ep.episode === 0) continue
+    try {
+      const sk = await cachedAniskip(malId, ep.episode)
+      if (!sk) continue
+      const m: EpisodeMarkers = ep.markers ?? { source: 'aniskip' }
+      if (sk.introStart != null && sk.introEnd != null) {
+        m.intro = { start: sk.introStart, end: sk.introEnd }
+      }
+      if (sk.creditsStart != null) m.credits = { start: sk.creditsStart }
+      m.source = ep.markers ? 'mixed' : 'aniskip'
+      ep.markers = m
+    } catch (err) {
+      console.warn(`[episodes] aniskip marker failed (mal:${malId} ep:${ep.episode}):`, (err as Error).message)
+    }
+  }
 }
 
 // ─── Cache ────────────────────────────────────────────────────────────────

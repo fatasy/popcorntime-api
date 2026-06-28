@@ -6,9 +6,12 @@ import {
   desc,
   eq,
   getTableColumns,
+  gte,
   ilike,
   inArray,
   isNotNull,
+  lt,
+  or,
   sql,
   type SQL,
 } from 'drizzle-orm'
@@ -34,15 +37,60 @@ interface FilterInput {
   year?: number
   search?: string
   enriched?: boolean
+  // ISO date strings: filter by when the content was added to the catalog
+  // (contents.created_at). Powers the app's "Novidades do mês" row — there is
+  // no finer-grained release date stored, so "added this month" is the proxy.
+  created_after?: string
+  created_before?: string
+}
+
+/** Parses an ISO date string; returns null if absent or invalid (so a bad query param is ignored, not fatal). */
+function parseDate(s?: string): Date | null {
+  if (!s) return null
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+// Os gêneros são gravados em IDIOMAS diferentes por fonte: TMDB (filmes/séries) em
+// pt-BR ("Ação", "Comédia"), Jikan/MAL (animes) e OMDb em inglês ("Action", "Comedy").
+// Um filtro ?genre=Ação precisa casar AMBOS, senão `type=anime&genre=Ação` retorna 0.
+// Mapeia cada gênero pt-BR para os sinônimos equivalentes (inclui o próprio).
+const GENRE_ALIASES: Record<string, string[]> = {
+  Ação: ['Ação', 'Action'],
+  Aventura: ['Aventura', 'Adventure'],
+  Comédia: ['Comédia', 'Comedy'],
+  Drama: ['Drama'],
+  Animação: ['Animação', 'Animation'],
+  Família: ['Família', 'Family'],
+  Fantasia: ['Fantasia', 'Fantasy'],
+  Terror: ['Terror', 'Horror'],
+  Romance: ['Romance'],
+  'Ficção científica': ['Ficção científica', 'Sci-Fi', 'Sci-Fi & Fantasy', 'Science Fiction'],
+  Mistério: ['Mistério', 'Mystery'],
+  Suspense: ['Suspense', 'Thriller'],
+  Crime: ['Crime'],
+  Documentário: ['Documentário', 'Documentary'],
+  Guerra: ['Guerra', 'War'],
+}
+
+/** Condição "o conteúdo tem o gênero pedido (ou um sinônimo em outro idioma)". */
+function genreFilter(genre: string): SQL {
+  const aliases = GENRE_ALIASES[genre] ?? [genre]
+  const ors = aliases.map((g) => sql`${g} = ANY(${contents.genres})`)
+  return ors.length === 1 ? ors[0]! : or(...ors)!
 }
 
 function buildFilters(input: FilterInput): SQL[] {
   const conds: SQL[] = []
   if (input.type) conds.push(eq(contents.type, input.type))
   if (input.year != null) conds.push(eq(contents.year, input.year))
-  if (input.genre) conds.push(sql`${input.genre} = ANY(${contents.genres})`)
+  if (input.genre) conds.push(genreFilter(input.genre))
   if (input.search) conds.push(ilike(contents.title, `%${input.search}%`))
   if (input.enriched) conds.push(isNotNull(contents.enriched_at))
+  const after = parseDate(input.created_after)
+  if (after) conds.push(gte(contents.created_at, after))
+  const before = parseDate(input.created_before)
+  if (before) conds.push(lt(contents.created_at, before))
   return conds
 }
 
@@ -121,7 +169,14 @@ export const catalogRoutes = new Elysia()
     '/catalog',
     async ({ query }) => {
       const { page, limit } = pagination(query)
-      const filters = buildFilters({ type: query.type, genre: query.genre, year: query.year, enriched: query.enriched === 'true' || query.enriched === '1' })
+      const filters = buildFilters({
+        type: query.type,
+        genre: query.genre,
+        year: query.year,
+        enriched: query.enriched === 'true' || query.enriched === '1',
+        created_after: query.created_after,
+        created_before: query.created_before,
+      })
       const isValidSort = query.sort === 'popular' || (query.sort != null && query.sort in SORT_COLUMNS)
       const sort = isValidSort ? (query.sort as SortKey | 'popular') : 'created_at'
       const order = query.order === 'asc' ? 'asc' : 'desc'
@@ -136,6 +191,8 @@ export const catalogRoutes = new Elysia()
         sort: t.Optional(t.String()),
         order: t.Optional(t.String()),
         enriched: t.Optional(t.String()),
+        created_after: t.Optional(t.String()),
+        created_before: t.Optional(t.String()),
         page: t.Optional(t.Numeric()),
         limit: t.Optional(t.Numeric()),
       }),

@@ -93,8 +93,8 @@ export async function resolveEpisodes(contentId: number): Promise<EpisodeInfo[]>
     .from(contents)
     .where(eq(contents.id, contentId))
     .limit(1)
-  if (!content || content.type !== 'series') {
-    throw new Error(`Content ${contentId} is not a series`)
+  if (!content || (content.type !== 'series' && content.type !== 'anime')) {
+    throw new Error(`Content ${contentId} is not a series or anime`)
   }
 
   // 2. Load all linked torrents (now including size_bytes)

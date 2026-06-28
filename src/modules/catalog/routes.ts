@@ -172,8 +172,8 @@ export const catalogRoutes = new Elysia()
       // Add quality to each linked torrent
       const linkedWithQuality = linked.map((t: any) => ({ ...t, quality: extractQuality(t.title) }))
 
-      // For series, group torrents by season using coverage classification
-      if (content.type === 'series') {
+      // For series and anime, group torrents by season using coverage classification
+      if (content.type === 'series' || content.type === 'anime') {
         // Classify each torrent's season coverage
         const coverageMap = new Map<number, SeasonCoverage>()
         for (const t of linked) {
@@ -244,9 +244,9 @@ export const catalogRoutes = new Elysia()
         set.status = 404
         return { error: 'Content not found' }
       }
-      if (content.type !== 'series') {
+      if (content.type !== 'series' && content.type !== 'anime') {
         set.status = 400
-        return { error: 'Content is not a series' }
+        return { error: 'Content is not a series or anime' }
       }
 
       const episodes = await resolveEpisodes(id)

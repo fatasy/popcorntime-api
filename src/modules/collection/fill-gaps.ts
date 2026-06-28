@@ -106,8 +106,10 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
     // 2d. Fetch all EZTV torrents once (cached per series)
     const cleanImdb = stripImdbPrefix(series.imdb_id)
     let eztvTorrents: RawTorrent[] = []
+    let eztvHasResults = false
     try {
       eztvTorrents = await fetchEztvByImdb(cleanImdb)
+      eztvHasResults = eztvTorrents.length > 0
     } catch (err) {
       console.warn(
         `[fillGaps] EZTV fetch failed for "${seriesTitle}" (imdb=${cleanImdb}):`,
@@ -139,8 +141,8 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
             season: gap.season,
             episode: episodeNum,
           })
-        } else {
-          // 2f. Fallback to SolidTorrents
+        } else if (!eztvHasResults) {
+          // 2f. Fallback to SolidTorrents — only if EZTV had zero results for this series
           const seasonStr = padTwo(gap.season)
           const episodeStr = padTwo(episodeNum)
           const query = `${seriesTitle} S${seasonStr}E${episodeStr}`
@@ -150,11 +152,8 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
 
             const solidMatches = solidResults
               .filter((t) => {
-                // Filter out packs
                 if (isPack(t.title)) return false
-                // Minimum seeds
                 if ((t.seeds ?? 0) < 1) return false
-                // Parse and match season/episode
                 const parsed = parseRelease(t.title)
                 if (parsed.season !== gap.season) return false
                 if (parsed.episode !== episodeNum) return false
@@ -170,8 +169,8 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
               })
             }
 
-            // 500ms delay between SolidTorrents API calls
-            await new Promise((r) => setTimeout(r, 500))
+            // 2s delay between SolidTorrents API calls
+            await new Promise((r) => setTimeout(r, 2_000))
           } catch (err) {
             console.warn(
               `[fillGaps] SolidTorrents search failed for "${query}":`,

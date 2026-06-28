@@ -1,8 +1,9 @@
-import { inArray, sql } from 'drizzle-orm'
+import { inArray, sql, eq, desc } from 'drizzle-orm'
 import { db } from '../../db'
-import { torrents } from '../../types'
+import { torrents, contents } from '../../types'
 import type { RawTorrent } from '../../lib/parse'
 import { fetchApibayTop100, queryApibay } from './sources/apibay'
+import { searchNyaa } from './sources/nyaa'
 
 // Our category label -> TPB/apibay numeric category id.
 export const CATEGORIES = {
@@ -108,7 +109,60 @@ export async function collectTorrents(category: Category): Promise<number> {
     }
   }
 
+  // For anime, also search nyaa.si using anime titles from the database
+  if (category === 'anime') {
+    try {
+      const nyaaResults = await collectAnimeFromNyaa()
+      if (nyaaResults.length) raw = raw.concat(nyaaResults)
+    } catch (err) {
+      console.warn(`[collect] nyaa search failed for anime:`, (err as Error).message)
+    }
+  }
+
   return persistTorrents(raw, category)
+}
+
+// ─── nyaa.si anime collector ──────────────────────────────────────────────
+
+/**
+ * Search nyaa.si using anime titles from the database.
+ * Queries the 10 most recent anime contents and searches for each title.
+ */
+async function collectAnimeFromNyaa(): Promise<RawTorrent[]> {
+  const animeRows = await db
+    .select({ title: contents.title })
+    .from(contents)
+    .where(eq(contents.type, 'anime'))
+    .orderBy(desc(contents.id))
+    .limit(10)
+
+  if (animeRows.length === 0) {
+    console.log('[nyaa/collect] no anime contents in database yet')
+    return []
+  }
+
+  const all: RawTorrent[] = []
+  const seen = new Set<string>()
+
+  for (const row of animeRows) {
+    const title = row.title
+    if (!title) continue
+
+    try {
+      const results = await searchNyaa(title, 50)
+      for (const t of results) {
+        if (!seen.has(t.hash)) {
+          seen.add(t.hash)
+          all.push(t)
+        }
+      }
+    } catch (err) {
+      console.warn(`[nyaa/collect] search failed for "${title}":`, (err as Error).message)
+    }
+  }
+
+  console.log(`[nyaa/collect] ${all.length} unique torrents from ${animeRows.length} anime titles`)
+  return all
 }
 
 // ─── query-based collector ──────────────────────────────────────────

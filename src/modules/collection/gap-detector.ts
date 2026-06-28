@@ -191,7 +191,7 @@ export async function detectGaps(contentId: number): Promise<SeasonGap[]> {
     .limit(1)
 
   if (!content) throw new Error(`Content ${contentId} not found`)
-  if (content.type !== 'series') throw new Error(`Content ${contentId} is not a series`)
+  if (content.type !== 'series' && content.type !== 'anime') throw new Error(`Content ${contentId} is not a series or anime`)
   if (content.tmdb_id == null) throw new Error(`Content ${contentId} has no tmdb_id`)
 
   const tmdbId = content.tmdb_id

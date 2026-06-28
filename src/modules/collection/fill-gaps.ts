@@ -20,6 +20,7 @@ interface MatchedTorrent {
   torrent: RawTorrent
   season: number
   episode: number
+  isFallback?: boolean // true if EZTV fallback (seeds unreliable)
 }
 
 // ─── Pack detection ─────────────────────────────────────────────────────────
@@ -126,7 +127,10 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
 
     for (const gap of gaps) {
       for (const episodeNum of gap.episodes) {
-        // 2e. Try EZTV first: exact season + episode match (EZTV seeds are unreliable, report 0)
+        const seasonStr = padTwo(gap.season)
+        const episodeStr = padTwo(episodeNum)
+
+        // Try EZTV first for discovery (seeds are unreliable, but hashes are valid)
         const eztvMatches = eztvTorrents
           .filter(
             (t) =>
@@ -135,49 +139,60 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
           )
           .sort((a, b) => (b.seeds ?? 0) - (a.seeds ?? 0))
 
-        if (eztvMatches.length > 0) {
+        // Always try SolidTorrents too — it reports real seed counts for its own hashes
+        let solidBest: RawTorrent | null = null
+        const query = `${seriesTitle} S${seasonStr}E${episodeStr}`
+        try {
+          const solidResults = await searchSolidTorrents(query, 50)
+          const solidMatches = solidResults
+            .filter((t) => {
+              if (isPack(t.title)) return false
+              if ((t.seeds ?? 0) < 1) return false
+              const parsed = parseRelease(t.title)
+              if (parsed.season !== gap.season) return false
+              if (parsed.episode !== episodeNum) return false
+              return true
+            })
+            .sort((a, b) => (b.seeds ?? 0) - (a.seeds ?? 0))
+          if (solidMatches.length > 0) {
+            solidBest = solidMatches[0]!
+          }
+        } catch (err) {
+          console.warn(
+            `[fillGaps] SolidTorrents search failed for "${query}":`,
+            (err as Error).message,
+          )
+        }
+
+        // Prefer SolidTorrents when it has real seeds (>0)
+        let hasSolid = false
+        if (solidBest && (solidBest.seeds ?? 0) > 0) {
           matched.push({
-            torrent: eztvMatches[0]!,
+            torrent: solidBest,
             season: gap.season,
             episode: episodeNum,
           })
-        } else if (!eztvHasResults) {
-          // 2f. Fallback to SolidTorrents — only if EZTV had zero results for this series
-          const seasonStr = padTwo(gap.season)
-          const episodeStr = padTwo(episodeNum)
-          const query = `${seriesTitle} S${seasonStr}E${episodeStr}`
-
-          try {
-            const solidResults = await searchSolidTorrents(query, 50)
-
-            const solidMatches = solidResults
-              .filter((t) => {
-                if (isPack(t.title)) return false
-                if ((t.seeds ?? 0) < 1) return false
-                const parsed = parseRelease(t.title)
-                if (parsed.season !== gap.season) return false
-                if (parsed.episode !== episodeNum) return false
-                return true
-              })
-              .sort((a, b) => (b.seeds ?? 0) - (a.seeds ?? 0))
-
-            if (solidMatches.length > 0) {
-              matched.push({
-                torrent: solidMatches[0]!,
-                season: gap.season,
-                episode: episodeNum,
-              })
-            }
-
-            // 2s delay between SolidTorrents API calls
-            await new Promise((r) => setTimeout(r, 2_000))
-          } catch (err) {
-            console.warn(
-              `[fillGaps] SolidTorrents search failed for "${query}":`,
-              (err as Error).message,
-            )
-          }
+          hasSolid = true
         }
+
+        // Also include ALL EZTV releases for quality variety (marked as fallback)
+        for (const eztvMatch of eztvMatches) {
+          if (hasSolid && eztvMatch.hash === solidBest?.hash) continue // skip duplicate
+          matched.push({
+            torrent: { ...eztvMatch, seeds: 0, leechers: 0 },
+            season: gap.season,
+            episode: episodeNum,
+            isFallback: true,
+          })
+        }
+
+        // If no SolidTorrents and no EZTV, we still have nothing for this episode
+        if (!hasSolid && eztvMatches.length === 0) {
+          // Episode still missing — nothing to add
+        }
+
+        // 2s delay between SolidTorrents API calls
+        await new Promise((r) => setTimeout(r, 2_000))
       }
     }
 

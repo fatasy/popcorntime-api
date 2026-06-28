@@ -53,6 +53,7 @@ interface LinkedTorrent {
   size_bytes: number | null
   season: number | null
   episode: number | null
+  source: string | null
 }
 
 // ─── Helper ─────────────────────────────────────────────────────────────
@@ -107,6 +108,7 @@ export async function resolveEpisodes(contentId: number): Promise<EpisodeInfo[]>
       size_bytes: torrents.size_bytes,
       season: content_torrents.season,
       episode: content_torrents.episode,
+      source: torrents.source,
     })
     .from(content_torrents)
     .innerJoin(torrents, eq(torrents.id, content_torrents.torrent_id))
@@ -308,7 +310,14 @@ async function resolveWithTmdb(
       episode,
       title: tmdb?.title ?? null,
       air_date: tmdb?.air_date ?? null,
-      torrents: episodeTorrents.sort((a, b) => b.seeds - a.seeds),
+      torrents: episodeTorrents.sort((a, b) => {
+        // Prefer higher seeds; tie-break: non-EZTV sources first (SolidTorrents has real seed data)
+        const seedDiff = b.seeds - a.seeds
+        if (seedDiff !== 0) return seedDiff
+        const aIsEztv = a.title?.includes('[EZTV') ? 1 : 0
+        const bIsEztv = b.title?.includes('[EZTV') ? 1 : 0
+        return aIsEztv - bIsEztv
+      }),
       markers: runtimeSec ? { runtime_sec: runtimeSec, source: 'tmdb' } : null,
     })
   }
@@ -350,7 +359,13 @@ function resolveHeuristic(linked: LinkedTorrent[]): EpisodeInfo[] {
       episode,
       title: null,
       air_date: null,
-      torrents: episodeTorrents.sort((a, b) => b.seeds - a.seeds),
+      torrents: episodeTorrents.sort((a, b) => {
+        const seedDiff = b.seeds - a.seeds
+        if (seedDiff !== 0) return seedDiff
+        const aIsEztv = a.title?.includes('[EZTV') ? 1 : 0
+        const bIsEztv = b.title?.includes('[EZTV') ? 1 : 0
+        return aIsEztv - bIsEztv
+      }),
     })
   }
 

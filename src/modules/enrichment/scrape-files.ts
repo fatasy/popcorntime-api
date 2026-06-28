@@ -9,6 +9,9 @@ import { torrents } from '../../types'
 import { scrapeFileList, extractQualityFromFiles } from '../torrent/scrape-filelist'
 import type { LimeTorrentFile } from '../torrent/scrape-filelist'
 
+// Re-export for pipeline use
+import { searchSolidTorrents } from '../collection/sources/solidtorrents'
+
 const BATCH_SIZE = 25
 const DELAY_BETWEEN_TORRENTS_MS = 1_500
 
@@ -17,7 +20,6 @@ const DELAY_BETWEEN_TORRENTS_MS = 1_500
  * Only processes torrents where file_list IS NULL.
  */
 export async function scrapeFileLists(limit = BATCH_SIZE): Promise<number> {
-  // Find torrents without file_list, with seeds > 0
   const rows = await db
     .select({ id: torrents.id, title: torrents.title, hash: torrents.hash, seeds: torrents.seeds })
     .from(torrents)
@@ -63,7 +65,6 @@ export async function scrapeFileLists(limit = BATCH_SIZE): Promise<number> {
       console.warn(`[scrape-files] Error for #${t.id}:`, (err as Error).message)
     }
 
-    // Rate limiting
     if (successCount < rows.length - 1) {
       await new Promise((r) => setTimeout(r, DELAY_BETWEEN_TORRENTS_MS))
     }
@@ -71,4 +72,41 @@ export async function scrapeFileLists(limit = BATCH_SIZE): Promise<number> {
 
   console.log(`[scrape-files] Done: ${successCount}/${rows.length} scraped successfully`)
   return successCount
+}
+
+/**
+ * Enrich seed counts for EZTV torrents by cross-referencing with SolidTorrents.
+ * EZTV always reports seeds=0; SolidTorrents has real swarm data.
+ */
+export async function enrichEztvSeeds(limit = 50): Promise<number> {
+  const rows = await db
+    .select({ id: torrents.id, title: torrents.title, hash: torrents.hash, seeds: torrents.seeds })
+    .from(torrents)
+    .where(eq(torrents.source, 'eztv').and(eq(torrents.seeds, 0)))
+    .limit(limit)
+
+  if (rows.length === 0) return 0
+
+  console.log(`[enrich-seeds] Found ${rows.length} EZTV torrents with seeds=0. Enriching...`)
+  let updated = 0
+
+  for (const t of rows) {
+    try {
+      const results = await searchSolidTorrents(t.title, 5)
+      const best = results.filter((r) => (r.seeds ?? 0) > 0).sort((a, b) => (b.seeds ?? 0) - (a.seeds ?? 0))[0]
+      if (best && (best.seeds ?? 0) > 0) {
+        await db
+          .update(torrents)
+          .set({ seeds: best.seeds, leechers: best.leechers })
+          .where(eq(torrents.id, t.id))
+        updated++
+      }
+    } catch (err) {
+      // skip
+    }
+    await new Promise((r) => setTimeout(r, 500))
+  }
+
+  console.log(`[enrich-seeds] Updated ${updated}/${rows.length} seed counts`)
+  return updated
 }

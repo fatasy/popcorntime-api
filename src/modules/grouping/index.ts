@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, isNull, ilike } from 'drizzle-orm'
 import { db } from '../../db'
 import { contents, content_torrents, torrents } from '../../types'
 import { normalizeTitle, parseRelease } from '../../lib/parse'
@@ -48,7 +48,14 @@ export async function groupUngrouped(
       const conds = [eq(contents.type, type)]
       let hasNarrowingFilter = false
       if (parsed.year != null) { conds.push(eq(contents.year, parsed.year)); hasNarrowingFilter = true }
-      if (type === 'anime' && parsed.episode != null) { conds.push(eq(contents.episode, parsed.episode)); hasNarrowingFilter = true }
+      if (type === 'anime' && parsed.episode != null) {
+        // For anime, narrow by title prefix (normalizeTitle can't be pushed to SQL, use ilike)
+        const titlePrefix = norm.substring(0, 8)
+        if (titlePrefix.length >= 4) {
+          conds.push(ilike(contents.title, `${titlePrefix}%`))
+          hasNarrowingFilter = true
+        }
+      }
 
       // If we have no year, no episode/season → too risky to match (would scan ALL contents of that type).
       // Skip matching entirely and create a new content. Enrichment + merge will fix duplicates later.

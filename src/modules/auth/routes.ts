@@ -138,6 +138,36 @@ export const authRoutes = new Elysia({ prefix: '/auth' })
       detail: { summary: 'Criar perfil', tags: ['auth'] },
     },
   )
+  // PATCH /auth/profiles/:id — editar nome e/ou avatar
+  .patch(
+    '/profiles/:id',
+    async ({ jwt, headers, set, params, body }) => {
+      const r = await resolveAuth(jwt, headers)
+      if (!r.ok) {
+        set.status = r.status
+        return { error: r.error }
+      }
+      const id = Number(params.id)
+      if (!Number.isInteger(id)) {
+        set.status = 400
+        return { error: 'id inválido' }
+      }
+      const updated = await svc.updateProfile(r.userId, id, { name: body.name, avatar: body.avatar })
+      if (!updated) {
+        set.status = 403
+        return { error: 'Perfil não pertence à conta' }
+      }
+      return updated
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({
+        name: t.Optional(t.String({ minLength: 1, maxLength: 64 })),
+        avatar: t.Optional(t.Union([t.String({ maxLength: 32 }), t.Null()])),
+      }),
+      detail: { summary: 'Editar perfil (nome/avatar)', tags: ['auth'] },
+    },
+  )
   // DELETE /auth/profiles/:id
   .delete(
     '/profiles/:id',

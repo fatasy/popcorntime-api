@@ -173,6 +173,31 @@ export async function createProfile(
   return rows[0]!
 }
 
+export async function updateProfile(
+  userId: number,
+  profileId: number,
+  fields: { name?: string; avatar?: string | null },
+): Promise<AccountProfile | null> {
+  if (!(await ownsProfile(userId, profileId))) return null
+  const patch: Partial<{ name: string; avatar: string | null }> = {}
+  if (fields.name !== undefined) patch.name = fields.name
+  if (fields.avatar !== undefined) patch.avatar = fields.avatar
+  if (Object.keys(patch).length === 0) {
+    const cur = await db
+      .select({ id: profiles.id, name: profiles.name, avatar: profiles.avatar })
+      .from(profiles)
+      .where(eq(profiles.id, profileId))
+      .limit(1)
+    return cur[0] ?? null
+  }
+  const rows = await db
+    .update(profiles)
+    .set(patch)
+    .where(eq(profiles.id, profileId))
+    .returning({ id: profiles.id, name: profiles.name, avatar: profiles.avatar })
+  return rows[0] ?? null
+}
+
 export async function deleteProfile(userId: number, profileId: number): Promise<boolean> {
   if (!(await ownsProfile(userId, profileId))) return false
   await db.delete(profiles).where(eq(profiles.id, profileId))

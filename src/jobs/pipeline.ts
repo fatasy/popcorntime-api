@@ -4,23 +4,33 @@ import { scrapeFileLists } from '../modules/enrichment/scrape-files'
 import { fillGaps } from '../modules/collection/fill-gaps'
 import { groupUngrouped } from '../modules/grouping'
 import { mergeByTmdbId } from '../modules/grouping/merge-series'
+import { runDiscovery } from './discover'
 
 const CATEGORIES: Category[] = ['movies', 'series', 'anime']
 
 /**
  * Full ingestion pipeline:
+ *   0. (opt-in) discover new content from TMDB + Jikan
  *   1. collect torrents for every category
  *   2. enrich contents that have no metadata yet
  *   3. fill gaps — find missing seasons/episodes for enriched series
  *   4. merge duplicate series contents by tmdb_id
  *   5. group ungrouped torrents into contents
  *   6. scrape file lists from LimeTorrents
- *
- * Steps are independent and idempotent, so the catalog converges across runs
- * (contents created by grouping get enriched on the next pass).
  */
 export async function runPipeline(): Promise<void> {
   console.log('=== PopcornTime pipeline start ===')
+
+  // Step 0: Discovery (opt-in via PIPELINE_DISCOVER=1)
+  if (process.env.PIPELINE_DISCOVER === '1') {
+    console.log('\n[0/3] Discovering new content…')
+    try {
+      const d = await runDiscovery()
+      console.log(`[discover] +${d.movies} movies, +${d.series} series, +${d.anime} anime, ${d.torrents} torrents`)
+    } catch (err) {
+      console.error('[pipeline] discovery failed:', err)
+    }
+  }
 
   let newTorrents = 0
   for (const category of CATEGORIES) {
@@ -70,7 +80,6 @@ export async function runPipeline(): Promise<void> {
       `${gapTorrents} gap-filled, ${merged} series merged, ${grouped.created} contents created, ${grouped.matched} matched ===`,
   )
 
-  // Step 4: Scrape file lists from LimeTorrents (background, non-blocking)
   console.log('\n[4/3] Scraping file lists from LimeTorrents…')
   try {
     const scraped = await scrapeFileLists(25)

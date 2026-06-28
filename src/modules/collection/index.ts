@@ -13,35 +13,11 @@ export const CATEGORIES = {
 
 export type Category = keyof typeof CATEGORIES
 
-/**
- * Collect torrents for a category.
- * Primary: apibay precompiled top100. Fallback: apibay search queries.
- * New torrents are inserted; already-known ones (by hash) have their
- * `last_seen_at` bumped. Returns the number of newly inserted torrents.
- */
-export async function collectTorrents(category: Category): Promise<number> {
-  const cat = CATEGORIES[category]
-  let raw: RawTorrent[] = []
+// ─── shared persist logic ───────────────────────────────────────────
 
-  // 1) Primary source: apibay precompiled top100 (TPB HTML is JS-rendered, unscrapeable)
-  try {
-    raw = await fetchApibayTop100(cat, category)
-  } catch (err) {
-    console.warn(`[collect] apibay top100 failed for ${category}:`, (err as Error).message)
-  }
-
-  // 2) Fallback: search for popular terms to supplement
-  if (raw.length < 20) {
-    try {
-      const extra = await queryApibay(category, cat, category)
-      if (extra.length) raw = raw.concat(extra)
-    } catch (err) {
-      console.warn(`[collect] apibay fallback failed for ${category}:`, (err as Error).message)
-    }
-  }
-
+async function persistTorrents(raw: RawTorrent[], label: string): Promise<number> {
   if (raw.length === 0) {
-    console.log(`[collect] ${category}: no torrents fetched`)
+    console.log(`[collect] ${label}: no torrents`)
     return 0
   }
 
@@ -70,11 +46,11 @@ export async function collectTorrents(category: Category): Promise<number> {
         .set({ last_seen_at: sql`now()` })
         .where(inArray(torrents.hash, toTouch))
     } catch (err) {
-      console.warn('[collect] failed to update last_seen_at:', (err as Error).message)
+      console.warn(`[collect] failed to update last_seen_at:`, (err as Error).message)
     }
   }
 
-  // Insert the new ones (ignore races on the unique hash).
+  // Insert the new ones.
   let inserted = 0
   if (toInsert.length) {
     const values = toInsert.map((t) => ({
@@ -97,12 +73,60 @@ export async function collectTorrents(category: Category): Promise<number> {
         .returning({ id: torrents.id })
       inserted = result.length
     } catch (err) {
-      console.warn('[collect] insert failed:', (err as Error).message)
+      console.warn(`[collect] insert failed:`, (err as Error).message)
     }
   }
 
   console.log(
-    `[collect] ${category}: ${inserted} new, ${toTouch.length} updated (fetched ${batch.length})`,
+    `[collect] ${label}: ${inserted} new, ${toTouch.length} updated (fetched ${batch.length})`,
   )
   return inserted
+}
+
+// ─── main collector ─────────────────────────────────────────────────
+
+/**
+ * Collect torrents for a category.
+ * Primary: apibay precompiled top100. Fallback: apibay search queries.
+ */
+export async function collectTorrents(category: Category): Promise<number> {
+  const cat = CATEGORIES[category]
+  let raw: RawTorrent[] = []
+
+  try {
+    raw = await fetchApibayTop100(cat, category)
+  } catch (err) {
+    console.warn(`[collect] apibay top100 failed for ${category}:`, (err as Error).message)
+  }
+
+  if (raw.length < 20) {
+    try {
+      const extra = await queryApibay(category, cat, category)
+      if (extra.length) raw = raw.concat(extra)
+    } catch (err) {
+      console.warn(`[collect] apibay fallback failed for ${category}:`, (err as Error).message)
+    }
+  }
+
+  return persistTorrents(raw, category)
+}
+
+// ─── query-based collector ──────────────────────────────────────────
+
+/** Search for torrents by a free-text query and persist them under the given category. */
+export async function collectTorrentsByQuery(
+  query: string,
+  category: Category,
+): Promise<number> {
+  const cat = CATEGORIES[category]
+  let raw: RawTorrent[] = []
+
+  try {
+    raw = await queryApibay(query, cat, category)
+  } catch (err) {
+    console.warn(`[collect] query "${query}" failed:`, (err as Error).message)
+  }
+
+  if (raw.length === 0) return 0
+  return persistTorrents(raw, `query:${category}:${query.slice(0, 40)}`)
 }

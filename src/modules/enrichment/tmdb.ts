@@ -82,3 +82,80 @@ export async function getSeasonEpisodes(tvId: number, seasonNumber: number, lang
 export function tmdbImage(path?: string | null, size = 'w500'): string | null {
   return path ? `${IMAGE_BASE}/${size}${path}` : null
 }
+
+// ─── Discovery endpoints ─────────────────────────────────────────────
+
+export interface TmdbDiscoverItem {
+  id: number
+  title?: string
+  name?: string
+  original_title?: string
+  original_name?: string
+  overview?: string
+  poster_path?: string | null
+  backdrop_path?: string | null
+  release_date?: string
+  first_air_date?: string
+  vote_average?: number
+  genre_ids?: number[]
+  popularity?: number
+}
+
+async function discoverPaginated(path: string, pages = 2, params: Record<string, string | number | undefined> = {}): Promise<TmdbDiscoverItem[]> {
+  const results: TmdbDiscoverItem[] = []
+  for (let page = 1; page <= pages; page++) {
+    try {
+      const data = await tmdbGet<{ results?: TmdbDiscoverItem[]; total_pages?: number }>(path, {
+        ...params,
+        page,
+        language: 'pt-BR',
+        region: 'BR',
+      })
+      if (data.results?.length) results.push(...data.results)
+      if (data.total_pages != null && page >= data.total_pages) break
+    } catch (err) {
+      console.warn(`[tmdb] ${path} page ${page} failed:`, (err as Error).message)
+    }
+  }
+  return results
+}
+
+/** Movies now playing in theatres. */
+export function getNowPlayingMovies(pages = 2) {
+  return discoverPaginated('/movie/now_playing', pages)
+}
+
+/** Popular movies. */
+export function getPopularMovies(pages = 2) {
+  return discoverPaginated('/movie/popular', pages)
+}
+
+/** Trending movies this week. */
+export function getTrendingMovies(pages = 1) {
+  return discoverPaginated('/trending/movie/week', pages)
+}
+
+/** Popular TV shows. */
+export function getPopularTV(pages = 2) {
+  return discoverPaginated('/tv/popular', pages)
+}
+
+/** Trending TV this week. */
+export function getTrendingTV(pages = 1) {
+  return discoverPaginated('/trending/tv/week', pages)
+}
+
+/** TV shows currently on the air. */
+export function getOnTheAirTV(pages = 2) {
+  return discoverPaginated('/tv/on_the_air', pages)
+}
+
+/** Discover anime via TMDB (genre 16 = animation + keyword "anime" = 210024). */
+export function discoverAnime(pages = 2) {
+  return discoverPaginated('/discover/tv', pages, {
+    with_genres: '16',
+    with_keywords: '210024',
+    with_original_language: 'ja',
+    sort_by: 'popularity.desc',
+  })
+}

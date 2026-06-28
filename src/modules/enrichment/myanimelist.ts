@@ -52,3 +52,43 @@ export async function getAnime(id: number): Promise<JikanAnime | null> {
     return null
   }
 }
+
+// ─── Discovery endpoints ─────────────────────────────────────────────
+
+/** Currently airing seasonal anime. */
+export async function getSeasonNow(): Promise<JikanAnime[]> {
+  try {
+    const res = await fetch(`${BASE}/seasons/now?sfw=true`, {
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (!res.ok) {
+      console.warn(`[jikan] seasons/now HTTP ${res.status}`)
+      return []
+    }
+    const data = (await res.json()) as { data?: JikanAnime[] }
+    return data.data ?? []
+  } catch (err) {
+    console.warn('[jikan] seasons/now failed:', (err as Error).message)
+    return []
+  }
+}
+
+/** Top airing anime. */
+export async function getTopAiring(limit = 25): Promise<JikanAnime[]> {
+  try {
+    const url = new URL(BASE + '/top/anime')
+    url.searchParams.set('filter', 'airing')
+    url.searchParams.set('limit', String(limit))
+    url.searchParams.set('sfw', 'true')
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+    if (!res.ok) {
+      console.warn(`[jikan] top/anime HTTP ${res.status}`)
+      return []
+    }
+    const data = (await res.json()) as { data?: JikanAnime[] }
+    return data.data ?? []
+  } catch (err) {
+    console.warn('[jikan] top/airing failed:', (err as Error).message)
+    return []
+  }
+}

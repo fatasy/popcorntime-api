@@ -196,6 +196,34 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
       }
     }
 
+    // 2f. Also search for season packs (4K/2160p) that cover all episodes
+    // These complement per-episode torrents with higher quality options
+    try {
+      const packQuery = `${seriesTitle} S${padTwo(gaps[0]!.season)} 2160p`
+      const packResults = await searchSolidTorrents(packQuery, 30)
+      const viablePacks = packResults.filter((t) => {
+        if (!isPack(t.title)) return false
+        if ((t.seeds ?? 0) < 1) return false
+        return /2160|4k|uhd/i.test(t.title)
+      })
+      for (const pack of viablePacks) {
+        // Link as season pack (episode=null) for the season(s) it covers
+        for (const gap of gaps) {
+          matched.push({
+            torrent: pack,
+            season: gap.season,
+            episode: -1, // -1 = season pack, all episodes
+            isFallback: false,
+          })
+        }
+      }
+      if (viablePacks.length > 0) {
+        console.log(`[fillGaps] \"${seriesTitle}\": found ${viablePacks.length} season pack(s)`)
+      }
+    } catch (err) {
+      console.warn(`[fillGaps] Season pack search failed:`, (err as Error).message)
+    }
+
     if (matched.length === 0) {
       console.log(`[fillGaps] "${seriesTitle}": no torrents matched for any gap`)
       results.push({ seriesId: contentId, title: seriesTitle, torrentsAdded: 0 })
@@ -247,7 +275,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
             content_id: contentId,
             torrent_id: torrentId,
             season,
-            episode,
+            episode: episode === -1 ? null : episode, // -1 = season pack
           }
         })
         .filter((v): v is NonNullable<typeof v> => v != null)

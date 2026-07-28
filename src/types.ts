@@ -41,6 +41,7 @@ export const contents = pgTable('contents', {
   original_title: varchar('original_title', { length: 512 }),
   year: integer('year'),
   synopsis: text('synopsis'),
+  synopsis_raw: text('synopsis_raw'),
   genres: text('genres').array(),
   rating: decimal('rating'),
   poster_url: text('poster_url'),

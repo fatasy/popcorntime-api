@@ -178,6 +178,22 @@ async function enrichViaJikan(query: string, _content: Content): Promise<Content
 }
 
 async function applyUpdate(id: number, update: ContentUpdate): Promise<void> {
+  // If synopsis_raw is already set, the content was translated.
+  // Redirect any synopsis update to synopsis_raw to preserve the Portuguese translation.
+  if (update.synopsis) {
+    const existing = await db
+      .select({ synopsis_raw: contents.synopsis_raw })
+      .from(contents)
+      .where(eq(contents.id, id))
+      .limit(1)
+
+    if (existing[0]?.synopsis_raw != null) {
+      // Content was translated — write new English synopsis to synopsis_raw instead
+      update.synopsis_raw = update.synopsis
+      delete update.synopsis
+    }
+  }
+
   await db
     .update(contents)
     .set({ ...update, enriched_at: sql`now()`, updated_at: sql`now()` })

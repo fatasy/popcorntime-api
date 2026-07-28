@@ -30,7 +30,7 @@ export function resolveMetainfoFromSwarm(
   if (!infoHash) return Promise.reject(new Error('invalid magnet info hash'))
 
   return new Promise((resolve, reject) => {
-    const torrent = client.add(metadataOnlyMagnet(magnetLink), {
+    const torrent = client.add(magnetLink, {
       destroyStoreOnDestroy: true,
     })
     let settled = false
@@ -65,17 +65,6 @@ export function resolveMetainfoFromSwarm(
     torrent.once('metadata', onMetadata)
     torrent.once('error', onError)
   })
-}
-
-function metadataOnlyMagnet(magnetLink: string): string {
-  const input = new URL(magnetLink)
-  const output = new URL('magnet:?')
-  for (const key of ['xt', 'dn', 'tr']) {
-    for (const value of input.searchParams.getAll(key)) {
-      output.searchParams.append(key, value)
-    }
-  }
-  return output.toString()
 }
 
 export async function destroyMetadataClient(client: MetadataClient): Promise<void> {

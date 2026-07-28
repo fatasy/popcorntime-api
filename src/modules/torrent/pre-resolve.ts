@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { content_torrents, torrent_metadata, torrents } from '../../types'
 import { resolveTorrentMetainfo } from './resolve-metadata'
@@ -18,23 +18,30 @@ export interface PreResolveResult {
 }
 
 /**
- * Resolve um lote pequeno de torrents visíveis no catálogo. Primários e mais
- * seedados vêm primeiro; falhas só voltam à fila após 24 horas.
+ * Resolve um lote pequeno entre os dois torrents com mais seeds de cada item do
+ * catálogo. Falhas só voltam à fila após 24 horas.
  */
 export async function preResolveTorrentMetadata(
   limit = 25,
   concurrency = 4,
 ): Promise<PreResolveResult> {
   const retryBefore = new Date(Date.now() - RETRY_AFTER_MS)
-  const linked = sql<boolean>`exists (
-    select 1 from ${content_torrents}
-    where ${content_torrents.torrent_id} = ${torrents.id}
-  )`
-  const primary = sql<boolean>`exists (
-    select 1 from ${content_torrents}
-    where ${content_torrents.torrent_id} = ${torrents.id}
-      and ${content_torrents.is_primary} = true
-  )`
+  const rankedByContent = db
+    .select({
+      torrentId: content_torrents.torrent_id,
+      seedRank: sql<number>`row_number() over (
+        partition by ${content_torrents.content_id}
+        order by coalesce(${torrents.seeds}, 0) desc, ${torrents.id} asc
+      )`.as('seed_rank'),
+    })
+    .from(content_torrents)
+    .innerJoin(torrents, eq(torrents.id, content_torrents.torrent_id))
+    .as('ranked_by_content')
+
+  const topTwoTorrentIds = db
+    .select({ torrentId: rankedByContent.torrentId })
+    .from(rankedByContent)
+    .where(lte(rankedByContent.seedRank, 2))
 
   const candidates = await db
     .select({
@@ -45,7 +52,7 @@ export async function preResolveTorrentMetadata(
     .leftJoin(torrent_metadata, eq(torrent_metadata.hash, torrents.hash))
     .where(
       and(
-        linked,
+        inArray(torrents.id, topTwoTorrentIds),
         isNull(torrent_metadata.metainfo),
         or(
           isNull(torrent_metadata.last_attempt_at),
@@ -53,7 +60,7 @@ export async function preResolveTorrentMetadata(
         ),
       ),
     )
-    .orderBy(desc(primary), desc(torrents.seeds))
+    .orderBy(desc(torrents.seeds))
     .limit(Math.max(1, limit))
 
   let resolved = 0

@@ -14,6 +14,11 @@ export interface SeasonGap {
   episodes: number[] // episode numbers that are missing
 }
 
+export interface GapResult {
+  gaps: SeasonGap[]
+  isAiring: boolean
+}
+
 interface TmdbSeasonData {
   seasons: { season_number: number; episode_count: number }[]
 }
@@ -177,7 +182,7 @@ async function cacheSet(source: string, key: string, data: unknown): Promise<voi
  * against what we already have in the database. Uses metadata_cache with
  * 24h TTL to avoid excessive API calls.
  */
-export async function detectGaps(contentId: number): Promise<SeasonGap[]> {
+export async function detectGaps(contentId: number): Promise<GapResult> {
   // 1. Look up content by ID
   const [content] = await db
     .select({
@@ -204,7 +209,10 @@ export async function detectGaps(contentId: number): Promise<SeasonGap[]> {
 
   if (!seasonData) {
     try {
-      const tv = await tmdbFetch<{ seasons?: { season_number: number; episode_count: number; name: string }[] }>(
+      const tv = await tmdbFetch<{ 
+        seasons?: { season_number: number; episode_count: number; name: string }[]
+        status?: string
+      }>(
         `/tv/${tmdbId}`,
       )
       await new Promise((r) => setTimeout(r, TMDB_DELAY))
@@ -213,6 +221,7 @@ export async function detectGaps(contentId: number): Promise<SeasonGap[]> {
         .map((s) => ({ season_number: s.season_number, episode_count: s.episode_count }))
       seasonData = { seasons }
       await cacheSet('tmdb', seasonCacheKey, seasonData)
+      isAiring = tv.status === 'Returning Series' || tv.status === 'In Production'
     } catch (tmdbErr) {
       console.warn(`[detectGaps] TMDB failed for #${contentId}, trying TVMaze: ${(tmdbErr as Error).message}`)
       // Try TVMaze
@@ -225,6 +234,7 @@ export async function detectGaps(contentId: number): Promise<SeasonGap[]> {
   }
 
   const gaps: SeasonGap[] = []
+  let isAiring = false
 
   // 3. For each season, fetch episode list and compare against DB
   for (const s of seasonData.seasons) {
@@ -278,5 +288,5 @@ export async function detectGaps(contentId: number): Promise<SeasonGap[]> {
     }
   }
 
-  return gaps
+  return { gaps, isAiring }
 }

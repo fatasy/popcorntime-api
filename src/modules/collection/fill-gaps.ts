@@ -4,7 +4,7 @@ import { contents, torrents, content_torrents } from '../../types'
 import { parseRelease } from '../../lib/parse'
 import type { RawTorrent } from '../../lib/parse'
 import { detectGaps } from './gap-detector'
-import type { SeasonGap } from './gap-detector'
+import type { SeasonGap, GapResult } from './gap-detector'
 import { fetchEztvByImdb } from './sources/eztv'
 import { searchSolidTorrents } from './sources/solidtorrents'
 import { searchNyaa } from './sources/nyaa'
@@ -56,8 +56,9 @@ function stripImdbPrefix(imdbId: string): string {
  * @returns Summary array with torrentsAdded counts per series.
  */
 export async function fillGaps(limit = 5): Promise<FillResult[]> {
-  // 1. Query contents with tmdb_id IS NOT NULL AND (type = 'series' OR type = 'anime'),
-  //    ordered by id descending (most recently added first).
+  // 1. Query contents with tmdb_id IS NOT NULL AND (type = 'series' OR type = 'anime').
+  //    Fetch extra candidates so we can prioritize currently-airing series.
+  const evalLimit = limit * 4
   const seriesRows = await db
     .select({
       id: contents.id,
@@ -69,30 +70,32 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
     .where(
       and(
         isNotNull(contents.tmdb_id),
-        // Accept both series and anime types
-        // We use SQL "in" but drizzle-orm eq is cleaner
-        // Use raw conditions
       ),
     )
     .orderBy(desc(contents.id))
-    .limit(limit)
+    .limit(evalLimit)
 
   // Filter to only series + anime
   const applicable = seriesRows.filter(
     (r) => r.type === 'series' || r.type === 'anime',
   )
 
-  const results: FillResult[] = []
+  // 2. For each candidate, detect gaps + airing status
+  interface Candidate {
+    series: typeof applicable[0]
+    gaps: SeasonGap[]
+    isAiring: boolean
+    totalMissing: number
+  }
+  const candidates: Candidate[] = []
 
   for (const series of applicable) {
     const contentId = series.id
     const seriesTitle = series.title
-    const isAnime = series.type === 'anime'
 
-    // 2a. Detect missing seasons/episodes
-    let gaps: SeasonGap[]
+    let result: GapResult
     try {
-      gaps = await detectGaps(contentId)
+      result = await detectGaps(contentId)
     } catch (err) {
       console.warn(
         `[fillGaps] detectGaps failed for "${seriesTitle}" (id=${contentId}):`,
@@ -101,10 +104,35 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
       continue
     }
 
-    if (gaps.length === 0) {
+    if (result.gaps.length === 0) {
       console.log(`[fillGaps] "${seriesTitle}": no gaps, skipping`)
       continue
     }
+
+    const totalMissing = result.gaps.reduce((sum, g) => sum + g.episodes.length, 0)
+    candidates.push({
+      series,
+      gaps: result.gaps,
+      isAiring: result.isAiring,
+      totalMissing,
+    })
+  }
+
+  // 3. Sort: currently-airing first, then by most missing episodes
+  candidates.sort((a, b) => {
+    if (a.isAiring !== b.isAiring) return a.isAiring ? -1 : 1
+    return b.totalMissing - a.totalMissing
+  })
+
+  // 4. Take top N and process
+  const toProcess = candidates.slice(0, limit)
+  const results: FillResult[] = []
+
+  for (const candidate of toProcess) {
+    const { series, gaps, isAiring } = candidate
+    const contentId = series.id
+    const seriesTitle = series.title
+    const isAnime = series.type === 'anime'
 
     const totalMissing = gaps.reduce((sum, g) => sum + g.episodes.length, 0)
     console.log(

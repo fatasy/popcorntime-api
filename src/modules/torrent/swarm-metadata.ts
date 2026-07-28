@@ -6,6 +6,7 @@ import {
 } from './resolve-metadata'
 
 const SWARM_TIMEOUT_MS = 30_000
+const DESTROY_TIMEOUT_MS = 3_000
 
 export type MetadataClient = InstanceType<typeof WebTorrent>
 
@@ -78,5 +79,8 @@ function metadataOnlyMagnet(magnetLink: string): string {
 }
 
 export async function destroyMetadataClient(client: MetadataClient): Promise<void> {
-  await new Promise<void>((resolve) => client.destroy(() => resolve()))
+  await Promise.race([
+    new Promise<void>((resolve) => client.destroy(() => resolve())),
+    new Promise<void>((resolve) => setTimeout(resolve, DESTROY_TIMEOUT_MS)),
+  ])
 }

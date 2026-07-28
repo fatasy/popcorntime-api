@@ -6,6 +6,7 @@ import { catalogRoutes } from './modules/catalog/routes'
 import { subtitleRoutes } from './modules/subtitles/routes'
 import { authRoutes } from './modules/auth/routes'
 import { libraryRoutes } from './modules/library/routes'
+import { torrentRoutes } from './modules/torrent/routes'
 
 const corsOrigins = env.CORS_ORIGINS
   ? env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
@@ -32,6 +33,7 @@ export const app = new Elysia()
           { name: 'catalog', description: 'Catalog & search endpoints' },
           { name: 'auth', description: 'Accounts, profiles & JWT auth' },
           { name: 'library', description: 'Per-profile list & continue-watching' },
+          { name: 'torrent', description: 'Validated torrent metainfo cache' },
         ],
       },
     }),
@@ -44,6 +46,7 @@ export const app = new Elysia()
   .use(subtitleRoutes)
   .use(authRoutes)
   .use(libraryRoutes)
+  .use(torrentRoutes)
   .listen(env.PORT)
 
 console.log(`🍿 PopcornTime API running at http://localhost:${env.PORT} (docs: /swagger)`)

@@ -9,9 +9,14 @@ import {
   timestamp,
   decimal,
   jsonb,
+  customType,
   primaryKey,
   uuid,
 } from 'drizzle-orm/pg-core'
+
+const bytea = customType<{ data: Uint8Array }>({
+  dataType: () => 'bytea',
+})
 
 // NOTE: these tables ALREADY exist in the database. These Drizzle definitions
 // are used only for type-safe queries/inserts — never for migrations here.
@@ -113,8 +118,13 @@ export const torrent_metadata = pgTable(
   'torrent_metadata',
   {
     hash: varchar('hash', { length: 64 }).primaryKey(),
-    metadata: jsonb('metadata').notNull(),
-    resolved_at: timestamp('resolved_at', { withTimezone: true }).defaultNow(),
+    metadata: jsonb('metadata'),
+    metainfo: bytea('metainfo'),
+    source: varchar('source', { length: 32 }),
+    attempt_count: integer('attempt_count').notNull().default(0),
+    last_attempt_at: timestamp('last_attempt_at', { withTimezone: true }),
+    resolved_at: timestamp('resolved_at', { withTimezone: true }),
+    last_error: text('last_error'),
   },
 )
 

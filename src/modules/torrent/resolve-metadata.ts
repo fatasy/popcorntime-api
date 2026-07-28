@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { gunzipSync } from 'fflate'
 import { parseRelease } from '../../lib/parse'
 import { extractQuality, extractQualityLabel } from './quality'
 
@@ -15,6 +17,13 @@ export interface ResolvedMetadata {
   name: string          // torrent name from metadata
 }
 
+export interface ResolvedMetainfo {
+  data: Buffer
+  metadata: ResolvedMetadata
+  infoHash: string
+  source: string
+}
+
 // ─── Parse magnet link ──────────────────────────────────────────────────
 
 /**
@@ -27,9 +36,29 @@ export function extractInfoHash(magnetLink: string): string | null {
 
   // Some magnets use base32 encoding (32 chars)
   const m32 = magnetLink.match(/btih:([A-Z2-7]{32})/i)
-  if (m32) return m32[1]!.toLowerCase()
+  if (m32) return base32ToHex(m32[1]!)
 
   return null
+}
+
+function base32ToHex(input: string): string | null {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+  let bits = 0
+  let value = 0
+  const bytes: number[] = []
+
+  for (const char of input.toUpperCase()) {
+    const digit = alphabet.indexOf(char)
+    if (digit < 0) return null
+    value = (value << 5) | digit
+    bits += 5
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 0xff)
+      bits -= 8
+    }
+  }
+
+  return bytes.length === 20 ? Buffer.from(bytes).toString('hex') : null
 }
 
 /**
@@ -51,19 +80,22 @@ export function extractMagnetName(magnetLink: string): string | null {
 
 /** HTTP endpoints that serve .torrent files by info hash */
 const TORRENT_CACHES = [
-  // torrage.info — historically reliable
   {
     name: 'torrage',
-    url: (hash: string) => `https://torrage.info/torrent.php?h=${hash}`,
-    binary: false, // returns text/html with the torrent embedded
+    url: (hash: string) => `https://torrage.info/download.php?h=${hash.toUpperCase()}`,
   },
-  // btcache.me
   {
     name: 'btcache',
-    url: (hash: string) => `https://btcache.me/torrent/${hash}`,
-    binary: false,
+    url: (hash: string) => `https://btcache.me/torrent/${hash.toUpperCase()}`,
+  },
+  {
+    name: 'itorrents',
+    url: (hash: string) => `https://itorrents.org/torrent/${hash.toUpperCase()}.torrent`,
   },
 ]
+
+const FETCH_TIMEOUT_MS = 8_000
+const MAX_TORRENT_BYTES = 8 * 1024 * 1024
 
 // ─── Main export ────────────────────────────────────────────────────────
 
@@ -84,95 +116,172 @@ const TORRENT_CACHES = [
 export async function resolveTorrentMetadata(
   magnetLink: string,
 ): Promise<ResolvedMetadata | null> {
+  const result = await resolveTorrentMetainfo(magnetLink)
+  return result?.metadata ?? null
+}
+
+/**
+ * Resolve e valida o .torrent completo. O SHA-1 é calculado sobre os bytes exatos
+ * do dicionário `info`; respostas que não casam com o magnet são rejeitadas.
+ */
+export async function resolveTorrentMetainfo(
+  magnetLink: string,
+): Promise<ResolvedMetainfo | null> {
   const infoHash = extractInfoHash(magnetLink)
   if (!infoHash) {
     console.warn('[resolve-metadata] Could not extract info hash from magnet')
     return null
   }
 
-  // Try HTTP caches
-  const torrentData = await fetchTorrentFile(infoHash)
-  if (torrentData) {
-    try {
-      const meta = parseTorrentData(torrentData, infoHash)
-      return meta
-    } catch (err) {
-      console.warn(
-        `[resolve-metadata] Failed to parse torrent data for ${infoHash}:`,
-        (err as Error).message,
-      )
-    }
+  const controllers = TORRENT_CACHES.map(() => new AbortController())
+  try {
+    return await Promise.any(
+      TORRENT_CACHES.map((cache, index) =>
+        fetchTorrentFile(cache, infoHash, controllers[index]!.signal),
+      ),
+    )
+  } catch {
+    return null
+  } finally {
+    for (const controller of controllers) controller.abort()
   }
-
-  return null
 }
 
 // ─── HTTP-based metadata fetching ───────────────────────────────────────
 
-/**
- * Fetch a .torrent file from HTTP torrent caches.
- * Returns the raw bencoded buffer, or null if all caches fail.
- */
-async function fetchTorrentFile(infoHash: string): Promise<Buffer | null> {
-  for (const cache of TORRENT_CACHES) {
-    const url = cache.url(infoHash)
-    try {
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 10000)
+async function fetchTorrentFile(
+  cache: (typeof TORRENT_CACHES)[number],
+  infoHash: string,
+  outerSignal: AbortSignal,
+): Promise<ResolvedMetainfo> {
+  const timeoutController = new AbortController()
+  const timeout = setTimeout(() => timeoutController.abort(), FETCH_TIMEOUT_MS)
+  const abort = () => timeoutController.abort()
+  outerSignal.addEventListener('abort', abort, { once: true })
 
-      const resp = await fetch(url, {
-        signal: controller.signal,
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; PopcornTime/1.0)',
-        },
-      })
-      clearTimeout(timeout)
+  try {
+    const response = await fetch(cache.url(infoHash), {
+      signal: timeoutController.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; PopcornTime/1.0)',
+      },
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
-      if (!resp.ok) {
-        console.warn(`[resolve-metadata] ${cache.name}: HTTP ${resp.status}`)
-        continue
-      }
+    const contentLength = Number(response.headers.get('content-length') ?? 0)
+    if (contentLength > MAX_TORRENT_BYTES) throw new Error('metainfo too large')
 
-      const contentType = resp.headers.get('content-type') ?? ''
+    const compressed = Buffer.from(await response.arrayBuffer())
+    const body =
+      compressed[0] === 0x1f && compressed[1] === 0x8b
+        ? Buffer.from(gunzipSync(compressed))
+        : compressed
+    if (body.length < 50 || body.length > MAX_TORRENT_BYTES) {
+      throw new Error('invalid metainfo size')
+    }
 
-      if (contentType.includes('application/x-bittorrent') || contentType.includes('application/octet-stream')) {
-        // Binary torrent file
-        const buf = Buffer.from(await resp.arrayBuffer())
-        if (buf.length < 50) continue // too small
-        return buf
-      }
+    const contentType = response.headers.get('content-type') ?? ''
+    const data = contentType.includes('text/html') ? extractTorrentFromHtml(body) : body
+    if (!data) throw new Error('no torrent data in response')
 
-      // Some caches embed the torrent in HTML. Try to extract it.
-      if (contentType.includes('text/html')) {
-        const text = await resp.text()
-        // Try to find a magnet link that we can re-fetch
-        const magnetMatch = text.match(/magnet:\?xt=urn:btih:[^"'\s]+/i)
-        if (magnetMatch) {
-          // Found a magnet - but we already have it. Try extracting binary.
-        }
-        // Some pages have the torrent base64-encoded
-        const b64Match = text.match(/href="data:application\/x-bittorrent;base64,([^"]+)"/)
-        if (b64Match) {
-          try {
-            return Buffer.from(b64Match[1]!, 'base64')
-          } catch { /* fall through */ }
-        }
-      }
-    } catch (err) {
-      console.warn(`[resolve-metadata] ${cache.name} error:`, (err as Error).message)
-      continue
+    return validateTorrentMetainfo(data, infoHash, cache.name)
+  } finally {
+    clearTimeout(timeout)
+    outerSignal.removeEventListener('abort', abort)
+  }
+}
+
+function extractTorrentFromHtml(body: Buffer): Buffer | null {
+  const text = body.toString('utf-8')
+  const match = text.match(/data:application\/x-bittorrent;base64,([^"']+)/i)
+  return match ? Buffer.from(match[1]!, 'base64') : null
+}
+
+// ─── Parse bencoded torrent data ────────────────────────────────────────
+
+export function validateTorrentMetainfo(
+  data: Buffer,
+  infoHash: string,
+  source: string,
+): ResolvedMetainfo {
+  if (data.length < 50 || data.length > MAX_TORRENT_BYTES) {
+    throw new Error('invalid metainfo size')
+  }
+  const metadata = parseTorrentData(data)
+  const actualHash = hashInfoDictionary(data)
+  if (actualHash !== infoHash.toLowerCase()) {
+    throw new Error(`info hash mismatch: ${actualHash}`)
+  }
+  return { data, metadata, infoHash: actualHash, source }
+}
+
+function parseTorrentData(buf: Buffer): ResolvedMetadata {
+  const bencode = getBencodeParser()
+  const decoded = bencode.decode(buf)
+  return extractMetadata(decoded)
+}
+
+function hashInfoDictionary(buf: Buffer): string {
+  const info = findTopLevelDictionaryValue(buf, 'info')
+  if (!info) throw new Error('No raw info dictionary in torrent data')
+  return createHash('sha1').update(info).digest('hex')
+}
+
+function findTopLevelDictionaryValue(buf: Buffer, wantedKey: string): Buffer | null {
+  if (buf[0] !== 0x64) throw new Error('Torrent root is not a dictionary')
+  let pos = 1
+
+  while (pos < buf.length && buf[pos] !== 0x65) {
+    const key = readBencodedString(buf, pos)
+    pos = key.end
+    const valueStart = pos
+    pos = skipBencodedValue(buf, pos)
+    if (key.value.toString('utf-8') === wantedKey) {
+      return Buffer.from(buf.subarray(valueStart, pos))
     }
   }
   return null
 }
 
-// ─── Parse bencoded torrent data ────────────────────────────────────────
+function readBencodedString(buf: Buffer, start: number): { value: Buffer; end: number } {
+  let colon = start
+  while (colon < buf.length && buf[colon] !== 0x3a) {
+    const byte = buf[colon]!
+    if (byte < 0x30 || byte > 0x39) throw new Error('Invalid bencoded string')
+    colon++
+  }
+  if (colon >= buf.length) throw new Error('Unterminated bencoded string')
 
-function parseTorrentData(buf: Buffer, _infoHash: string): ResolvedMetadata {
-  const bencode = getBencodeParser()
-  const decoded = bencode.decode(buf)
-  return extractMetadata(decoded)
+  const length = Number(buf.toString('ascii', start, colon))
+  const valueStart = colon + 1
+  const end = valueStart + length
+  if (!Number.isSafeInteger(length) || length < 0 || end > buf.length) {
+    throw new Error('Invalid bencoded string length')
+  }
+  return { value: Buffer.from(buf.subarray(valueStart, end)), end }
+}
+
+function skipBencodedValue(buf: Buffer, start: number): number {
+  const marker = buf[start]
+  if (marker == null) throw new Error('Unexpected end of bencoded data')
+
+  if (marker >= 0x30 && marker <= 0x39) return readBencodedString(buf, start).end
+  if (marker === 0x69) {
+    const end = buf.indexOf(0x65, start + 1)
+    if (end < 0) throw new Error('Unterminated bencoded integer')
+    return end + 1
+  }
+  if (marker === 0x6c || marker === 0x64) {
+    let pos = start + 1
+    while (pos < buf.length && buf[pos] !== 0x65) {
+      if (marker === 0x64) pos = readBencodedString(buf, pos).end
+      pos = skipBencodedValue(buf, pos)
+    }
+    if (pos >= buf.length) throw new Error('Unterminated bencoded collection')
+    return pos + 1
+  }
+  throw new Error(`Invalid bencoded marker at ${start}`)
 }
 
 function extractMetadata(decoded: any): ResolvedMetadata {

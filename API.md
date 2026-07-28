@@ -319,6 +319,22 @@ GET /catalog/267/episodes
 
 ---
 
+## Metainfo pré-resolvido
+
+### `GET /torrents/:hash/metainfo`
+
+Retorna o arquivo `.torrent` validado pelo SHA-1 do dicionário `info`.
+
+- **200:** corpo binário com `Content-Type: application/x-bittorrent`
+- **304:** o `ETag` enviado pelo cliente ainda é válido
+- **400:** info hash inválido
+- **404:** metainfo ainda não resolvido; o app deve usar o magnet como fallback
+
+A resposta de sucesso usa `Cache-Control: public, max-age=31536000, immutable`,
+pois o conteúdo identificado pelo info hash não muda.
+
+---
+
 ## Observações importantes para o frontend
 
 1. **Streaming é client-side:** O backend NÃO serve vídeo. O frontend usa WebTorrent para abrir o `magnet_link` e fazer streaming P2P.

@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/webtorrent": "^0.110.1"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -22,6 +23,10 @@
     "magnet-uri": "^7.0.8",
     "parse-torrent": "^11.0.21",
     "postgres": "^3.4.9",
+    "webtorrent": "^3.0.21",
     "zod": "^4.4.3"
-  }
+  },
+  "trustedDependencies": [
+    "node-datachannel"
+  ]
 }

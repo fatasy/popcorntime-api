@@ -46,6 +46,19 @@ Ou acessar: `https://popcorntime.fsops.com.br/catalog?type=movies`
 2. `bun install --frozen-lockfile` — instala dependências
 3. `systemctl restart popcorntime-api` — reinicia o serviço (hot-reload, sem downtime)
 
+## Migração do cache de metainfo
+
+Antes do primeiro deploy da pré-resolução de torrents:
+
+```bash
+cd /root/projetos/popcorntime-api
+set -a && source .env && set +a
+psql "$DATABASE_URL" -f migrations/004_synopsis_raw.sql
+psql "$DATABASE_URL" -f migrations/005_torrent_metainfo.sql
+```
+
+A migração é idempotente e pode ser executada novamente sem apagar metadados já resolvidos.
+
 ## Comandos úteis
 
 ```bash

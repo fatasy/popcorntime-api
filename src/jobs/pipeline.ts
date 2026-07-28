@@ -5,6 +5,7 @@ import { fillGaps } from '../modules/collection/fill-gaps'
 import { groupUngrouped } from '../modules/grouping'
 import { mergeByTmdbId } from '../modules/grouping/merge-series'
 import { runDiscovery } from './discover'
+import { preResolveTorrentMetadata } from '../modules/torrent/pre-resolve'
 
 const CATEGORIES: Category[] = ['movies', 'series', 'anime']
 
@@ -86,6 +87,16 @@ export async function runPipeline(): Promise<void> {
     console.log(`[scrape] ${scraped} file lists scraped`)
   } catch (err) {
     console.error('[pipeline] file-list scraping failed:', err)
+  }
+
+  console.log('\n[5/3] Pre-resolving torrent metainfo…')
+  try {
+    const result = await preResolveTorrentMetadata(25, 4)
+    console.log(
+      `[metainfo] ${result.resolved}/${result.attempted} resolved, ${result.failed} failed`,
+    )
+  } catch (err) {
+    console.error('[pipeline] metainfo pre-resolution failed:', err)
   }
 
   console.log('=== Pipeline complete ===')

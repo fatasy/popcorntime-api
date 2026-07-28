@@ -5,6 +5,8 @@ import { contents } from '../../types'
 import { env } from '../../env'
 import { encodeToken, fetchVttByToken, hasProviders, searchSubtitles } from './aggregator'
 import type { SubtitleQuery } from './types'
+import { readdirSync, existsSync } from 'fs'
+import { join } from 'path'
 
 const DEFAULT_LANGS = env.SUBTITLE_LANGS.split(',')
   .map((s) => s.trim())
@@ -36,7 +38,7 @@ export const subtitleRoutes = new Elysia()
         : DEFAULT_LANGS
 
       const q: SubtitleQuery = {
-        type: content.type === 'series' ? 'series' : 'movie',
+        type: content.type === 'movie' ? 'movie' : 'series',  // anime, series → series
         imdbId: content.imdb_id ?? undefined,
         tmdbId: content.tmdb_id ?? undefined,
         title: content.title,
@@ -46,7 +48,36 @@ export const subtitleRoutes = new Elysia()
         episode: query.episode != null ? Number(query.episode) : undefined,
       }
 
-      const results = await searchSubtitles(q)
+      // Copiar o array para não mutar o cache compartilhado do searchSubtitles
+      const results = [...(await searchSubtitles(q))]
+
+      // Adicionar legendas locais (armazenadas em local-subtitles/{contentId}/)
+      const localDir = join(import.meta.dir, '..', '..', '..', 'local-subtitles', String(id))
+      if (existsSync(localDir)) {
+        const files = readdirSync(localDir).filter(f => f.endsWith('.srt'))
+        for (const file of files) {
+          const lang = file.includes('pt-BR') ? 'pt-BR' : file.includes('en') ? 'en' : 'pt-BR'
+          const label = file.replace(/\.srt$/, '')
+          results.push({
+            provider: 'local',
+            ref: `${id}:${file}`,
+            lang,
+            langLabel: lang === 'pt-BR' ? 'Português (Brasil)' : 'Inglês',
+            release: label,
+            downloads: 9999,
+            rating: 10,
+            hashMatch: true,
+            hearingImpaired: false,
+            format: 'srt',
+          })
+        }
+        // Reordenar: hashMatch=true primeiro, depois por downloads
+        results.sort((a, b) => {
+          if (a.hashMatch !== b.hashMatch) return a.hashMatch ? -1 : 1
+          return (b.downloads ?? 0) - (a.downloads ?? 0)
+        })
+      }
+
       // Atrás de proxy TLS, request.url chega como http — respeite os headers encaminhados.
       const u = new URL(request.url)
       const proto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim() || u.protocol.replace(':', '')

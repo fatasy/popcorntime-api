@@ -3,6 +3,8 @@ import { normalizeToVtt } from './normalize'
 import { openSubtitlesProvider } from './providers/opensubtitles'
 import { subdlProvider } from './providers/subdl'
 import type { SubtitleProvider, SubtitleQuery, SubtitleResult } from './types'
+import { join } from 'path'
+import { existsSync } from 'fs'
 
 const PROVIDERS: SubtitleProvider[] = [openSubtitlesProvider, subdlProvider]
 const PER_PROVIDER_TIMEOUT = 9000
@@ -29,7 +31,7 @@ function rank(a: SubtitleResult, b: SubtitleResult): number {
 const searchCache = new Map<string, { at: number; results: SubtitleResult[] }>()
 
 function cacheKey(q: SubtitleQuery): string {
-  return [q.type, q.imdbId ?? '', q.tmdbId ?? '', q.season ?? '', q.episode ?? '', [...q.languages].sort().join('+')].join('|')
+  return [q.type, q.imdbId ?? '', q.tmdbId ?? '', q.season ?? '', q.episode ?? '', q.title ?? '', [...q.languages].sort().join('+')].join('|')
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -79,6 +81,19 @@ export async function fetchVttByToken(token: string): Promise<string> {
   const cached = fileCache.get(token)
   if (cached) return cached
   const { p, r } = decodeToken(token)
+  // Local provider: ref = "contentId:filename"
+  if (p === 'local') {
+    const [contentId, ...rest] = r.split(':')
+    const filename = rest.join(':')
+    const localDir = join(import.meta.dir, '..', '..', '..', 'local-subtitles', contentId)
+    const filepath = join(localDir, filename)
+    if (!existsSync(filepath)) throw new Error('Arquivo de legenda local não encontrado')
+    const raw = await Bun.file(filepath).bytes()
+    const vtt = normalizeToVtt(raw)
+    if (fileCache.size > 500) fileCache.clear()
+    fileCache.set(token, vtt)
+    return vtt
+  }
   const provider = PROVIDERS.find((x) => x.id === p)
   if (!provider) throw new Error(`provider desconhecido: ${p}`)
   const raw = await provider.fetchFile(r)

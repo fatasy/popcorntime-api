@@ -68,7 +68,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
   // mal_id. These are the ones dropping a weekly episode that the user actually
   // cares about. Ordering the general window by id DESC never reaches them,
   // because airing anime carry LOW content ids (created before months of junk).
-  let priority: Array<{ id: number; title: string; imdb_id: string | null; type: string; mal_id: number | null }> = []
+  let priority: Array<{ id: number; title: string; imdb_id: string | null; type: string; mal_id: number | null; coverage: number }> = []
   try {
     const airingNow = await getSeasonNow()
     const airingMal = Array.from(new Set(airingNow.map((a) => a.mal_id)))
@@ -80,6 +80,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
           imdb_id: contents.imdb_id,
           type: contents.type,
           mal_id: contents.mal_id,
+          coverage: sql<number>`(select count(*) from content_torrents ct where ct.content_id = ${contents.id})`,
         })
         .from(contents)
         .where(
@@ -112,6 +113,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
       imdb_id: contents.imdb_id,
       type: contents.type,
       mal_id: contents.mal_id,
+      coverage: sql<number>`(select count(*) from content_torrents ct where ct.content_id = ${contents.id})`,
     })
     .from(contents)
     .where(
@@ -124,7 +126,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
       ),
     )
     .orderBy(
-      sql`(select count(*) from content_torrents ct where ct.content_id = ${contents.id}) asc`,
+      sql`coalesce(${sql`(select count(*) from content_torrents ct where ct.content_id = ${contents.id})`}, 999999) asc`,
       desc(contents.id),
     )
     .limit(evalLimit)
@@ -180,11 +182,16 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
     })
   }
 
-  // 3. Sort: currently-airing first, then anime before series (weekly anime is
-  //    the priority), then by FEWEST missing episodes — so a huge backfill like
-  //    "Survivor" (162 missing) does not jump the queue and block the anime that
-  //    only need their latest weekly episode.
+  // 3. Sort: LEAST-COVERAGE FIRST (fewest linked content_torrents) so anything
+  //    with zero/one episode is filled before well-covered content — the user's
+  //    rule: "se tem algo no catalogo, nao pode ficar sem conteudo." Airing
+  //    anime then take precedence within the same coverage bucket (weekly eps),
+  //    anime before series, then by FEWEST missing episodes so a huge backfill
+  //    doesn't block weekly anime that need one ep.
   candidates.sort((a, b) => {
+    const aCov = a.series.coverage ?? 0
+    const bCov = b.series.coverage ?? 0
+    if (aCov !== bCov) return aCov - bCov
     if (a.isAiring !== b.isAiring) return a.isAiring ? -1 : 1
     const aAnime = a.series.type === 'anime' ? 0 : 1
     const bAnime = b.series.type === 'anime' ? 0 : 1

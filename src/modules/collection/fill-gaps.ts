@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, desc, inArray, or } from 'drizzle-orm'
+import { and, eq, isNotNull, desc, inArray, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { contents, torrents, content_torrents } from '../../types'
 import { parseRelease } from '../../lib/parse'
@@ -95,9 +95,16 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
     console.warn('[fillGaps] failed to fetch airing anime:', (err as Error).message)
   }
 
-  // General window: series that can be filled (tmdb for detect + imdb for EZTV)
-  // and real enriched anime (mal for Jikan detect + nyaa fill). Excludes the
-  // unmatchable apibay junk piles that can't be filled anyway.
+  // General window: series that can be filled (tmdb + imdb for EZTV) and real
+  // enriched anime (mal for Jikan detect + nyaa fill). Excludes the unmatchable
+  // apibay junk piles that can't be filled anyway.
+  //
+  // Ordered by LEAST-COVERAGE FIRST (fewest linked content_torrents), then
+  // newest: a content with zero/one episode floats to the top regardless of how
+  // old its content id is. Previously this was `orderBy(desc(id))`, so old
+  // enriched anime (Re:Zero #398, Witch Hat #397, Mushoku #1201...) never
+  // entered the window and stayed permanently empty. Now the emptiest contents
+  // get filled first, and after each run they sink back down.
   const general = await db
     .select({
       id: contents.id,
@@ -116,7 +123,10 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
         ),
       ),
     )
-    .orderBy(desc(contents.id))
+    .orderBy(
+      sql`(select count(*) from content_torrents ct where ct.content_id = ${contents.id}) asc`,
+      desc(contents.id),
+    )
     .limit(evalLimit)
 
   // Combine: airing anime first, then the general window (dedup by id).

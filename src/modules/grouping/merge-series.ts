@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, ne } from 'drizzle-orm'
+import { and, eq, isNotNull, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { contents, content_torrents } from '../../types'
 
@@ -98,6 +98,108 @@ export async function mergeByTmdbId(): Promise<number> {
 
     console.log(
       `[merge] "${canonicalTitle}" (tmdb:${tmdbId}): ${merged} merged, ${deleted} deleted`,
+    )
+  }
+
+  return deleted
+}
+
+/**
+ * Merge anime-type contents that share the same mal_id.
+ *
+ * The vast majority of anime are keyed by MAL id (Jikan) and have NO tmdb_id,
+ * so `mergeByTmdbId()` never consolidates them. That left ~392 duplicate anime
+ * rows (223 distinct mal_id in 615 rows) — most of them empty catalog entries
+ * that never receive episodes because fill-gaps scans per-content.
+ *
+ * For each mal_id with 2+ anime contents:
+ *   - Pick the canonical row: prefer one that already has content_torrents
+ *     (so we keep the filled entry), then most enriched/synopsis/poster.
+ *   - Move all content_torrents rows from the others to the canonical one,
+ *     preserving season/episode/is_primary.
+ *   - Delete the orphaned content rows.
+ *
+ * Returns the number of content rows deleted.
+ */
+export async function mergeByMalId(): Promise<number> {
+  const anime = await db
+    .select()
+    .from(contents)
+    .where(and(eq(contents.type, 'anime'), isNotNull(contents.mal_id)))
+
+  const byMal = new Map<number, typeof anime>()
+  for (const c of anime) {
+    const mid = c.mal_id!
+    if (!byMal.has(mid)) byMal.set(mid, [])
+    byMal.get(mid)!.push(c)
+  }
+
+  let deleted = 0
+  let merged = 0
+
+  for (const [malId, group] of byMal) {
+    if (group.length < 2) continue
+
+    // Prefer the row that already has linked torrents; then richer metadata.
+    const scored = await Promise.all(
+      group.map(async (c) => {
+        const cnt = await db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(content_torrents)
+          .where(eq(content_torrents.content_id, c.id))
+        const n = cnt[0]?.n ?? 0
+        let score = n * 5 // any existing content strongly favored
+        if (c.enriched_at) score += 3
+        if (c.synopsis) score += 2
+        if (c.poster_url) score += 2
+        if (c.rating) score += 1
+        if (c.mal_id) score += 1
+        if (c.tmdb_id) score += 1
+        return { content: c, score, links: n }
+      }),
+    )
+
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      const aUpd = a.content.updated_at?.getTime() ?? 0
+      const bUpd = b.content.updated_at?.getTime() ?? 0
+      return bUpd - aUpd
+    })
+
+    const canonical = scored[0]!.content
+    const orphans = scored.slice(1)
+
+    for (const orphan of orphans) {
+      const links = await db
+        .select()
+        .from(content_torrents)
+        .where(eq(content_torrents.content_id, orphan.content.id))
+
+      for (const link of links) {
+        await db
+          .insert(content_torrents)
+          .values({
+            content_id: canonical.id,
+            torrent_id: link.torrent_id,
+            is_primary: link.is_primary ?? false,
+            season: link.season,
+            episode: link.episode,
+          })
+          .onConflictDoNothing()
+      }
+
+      await db
+        .delete(content_torrents)
+        .where(eq(content_torrents.content_id, orphan.content.id))
+
+      await db.delete(contents).where(eq(contents.id, orphan.content.id))
+
+      deleted++
+      merged += links.length
+    }
+
+    console.log(
+      `[merge] "${canonical.title}" (mal:${malId}): ${merged} merged, ${deleted} deleted`,
     )
   }
 

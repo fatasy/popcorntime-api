@@ -4,7 +4,7 @@ import { scrapeFileLists } from '../modules/enrichment/scrape-files'
 import { fillGaps } from '../modules/collection/fill-gaps'
 import { upgradeRecentMovieQuality } from '../modules/collection/movie-quality-upgrade'
 import { groupUngrouped } from '../modules/grouping'
-import { mergeByTmdbId } from '../modules/grouping/merge-series'
+import { mergeByTmdbId, mergeByMalId } from '../modules/grouping/merge-series'
 import { runDiscovery } from './discover'
 import { preResolveTorrentMetadata } from '../modules/torrent/pre-resolve'
 
@@ -52,7 +52,20 @@ export async function runPipeline(): Promise<void> {
     console.error('[pipeline] enrichment failed:', err)
   }
 
-  console.log('\n[2.2/3] Filling series gaps (missing seasons/episodes)…')
+  console.log('\n[2.2/3] Merging duplicate contents (series by tmdb_id, anime by mal_id)...')
+  let merged = 0
+  try {
+    merged += await mergeByTmdbId()
+  } catch (err) {
+    console.error('[pipeline] merge (tmdb) failed:', err)
+  }
+  try {
+    merged += await mergeByMalId()
+  } catch (err) {
+    console.error('[pipeline] merge (mal) failed:', err)
+  }
+
+  console.log('\n[2.3/3] Filling series gaps (missing seasons/episodes)...')
   let gapResults: { torrentsAdded: number }[] = []
   try {
     gapResults = await fillGaps(5)
@@ -61,7 +74,7 @@ export async function runPipeline(): Promise<void> {
   }
   const gapTorrents = gapResults.reduce((s, r) => s + r.torrentsAdded, 0)
 
-  console.log('\n[2.3/3] Upgrading recent-movie source quality…')
+  console.log('\n[2.4/3] Upgrading recent-movie source quality…')
   let qualityUpgraded = 0
   try {
     const upgraded = await upgradeRecentMovieQuality(10)
@@ -69,14 +82,6 @@ export async function runPipeline(): Promise<void> {
     if (upgraded.length) console.log(`[quality] upgraded ${upgraded.length} recent movie(s)`)
   } catch (err) {
     console.error('[pipeline] movie quality upgrade failed:', err)
-  }
-
-  console.log('\n[2.5/3] Merging duplicate series by tmdb_id…')
-  let merged = 0
-  try {
-    merged = await mergeByTmdbId()
-  } catch (err) {
-    console.error('[pipeline] merge failed:', err)
   }
 
   console.log('\n[3/3] Grouping ungrouped torrents…')
@@ -89,7 +94,7 @@ export async function runPipeline(): Promise<void> {
 
   console.log(
     `\n=== Pipeline done: +${newTorrents} torrents, ${enriched} enriched, ` +
-      `${gapTorrents} gap-filled, ${qualityUpgraded} quality-upgraded, ${merged} series merged, ${grouped.created} contents created, ${grouped.matched} matched ===`,
+      `${gapTorrents} gap-filled, ${qualityUpgraded} quality-upgraded, ${merged} contents merged, ${grouped.created} contents created, ${grouped.matched} matched ===`,
   )
 
   console.log('\n[4/3] Scraping file lists from LimeTorrents…')

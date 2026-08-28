@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, desc, inArray } from 'drizzle-orm'
+import { and, eq, isNotNull, desc, inArray, or } from 'drizzle-orm'
 import { db } from '../../db'
 import { contents, torrents, content_torrents } from '../../types'
 import { parseRelease } from '../../lib/parse'
@@ -8,6 +8,7 @@ import type { SeasonGap, GapResult } from './gap-detector'
 import { fetchEztvByImdb } from './sources/eztv'
 import { searchSolidTorrents } from './sources/solidtorrents'
 import { searchNyaa } from './sources/nyaa'
+import { getSeasonNow } from '../enrichment/myanimelist'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -42,6 +43,11 @@ function padTwo(n: number): string {
   return String(n).padStart(2, '0')
 }
 
+// Max missing episodes to search per candidate, per pipeline run. Keeps a huge
+// backfill (or a completely-unfilled seasonal anime) from monopolizing the run
+// with hundreds of nyaa/SolidTorrents calls. Each run advances by this much.
+const MAX_GAP_EPISODES_PER_RUN = 8
+
 function stripImdbPrefix(imdbId: string): string {
   return imdbId.replace(/^tt/i, '')
 }
@@ -56,24 +62,70 @@ function stripImdbPrefix(imdbId: string): string {
  * @returns Summary array with torrentsAdded counts per series.
  */
 export async function fillGaps(limit = 5): Promise<FillResult[]> {
-  // 1. Query contents with tmdb_id IS NOT NULL AND (type = 'series' OR type = 'anime').
-  //    Fetch extra candidates so we can prioritize currently-airing series.
   const evalLimit = limit * 4
-  const seriesRows = await db
+
+  // Priority candidates: currently-airing anime (Jikan season_now) matched by
+  // mal_id. These are the ones dropping a weekly episode that the user actually
+  // cares about. Ordering the general window by id DESC never reaches them,
+  // because airing anime carry LOW content ids (created before months of junk).
+  let priority: Array<{ id: number; title: string; imdb_id: string | null; type: string; mal_id: number | null }> = []
+  try {
+    const airingNow = await getSeasonNow()
+    const airingMal = Array.from(new Set(airingNow.map((a) => a.mal_id)))
+    if (airingMal.length > 0) {
+      priority = await db
+        .select({
+          id: contents.id,
+          title: contents.title,
+          imdb_id: contents.imdb_id,
+          type: contents.type,
+          mal_id: contents.mal_id,
+        })
+        .from(contents)
+        .where(
+          and(
+            eq(contents.type, 'anime'),
+            isNotNull(contents.enriched_at),
+            inArray(contents.mal_id, airingMal),
+          ),
+        )
+      console.log(`[fillGaps] ${priority.length} currently-airing anime candidates`)
+    }
+  } catch (err) {
+    console.warn('[fillGaps] failed to fetch airing anime:', (err as Error).message)
+  }
+
+  // General window: series that can be filled (tmdb for detect + imdb for EZTV)
+  // and real enriched anime (mal for Jikan detect + nyaa fill). Excludes the
+  // unmatchable apibay junk piles that can't be filled anyway.
+  const general = await db
     .select({
       id: contents.id,
       title: contents.title,
       imdb_id: contents.imdb_id,
       type: contents.type,
+      mal_id: contents.mal_id,
     })
     .from(contents)
     .where(
       and(
-        isNotNull(contents.tmdb_id),
+        inArray(contents.type, ['series', 'anime']),
+        or(
+          and(eq(contents.type, 'series'), isNotNull(contents.tmdb_id), isNotNull(contents.imdb_id)),
+          and(eq(contents.type, 'anime'), isNotNull(contents.mal_id), isNotNull(contents.enriched_at)),
+        ),
       ),
     )
     .orderBy(desc(contents.id))
     .limit(evalLimit)
+
+  // Combine: airing anime first, then the general window (dedup by id).
+  const seen = new Set<number>()
+  const seriesRows = [...priority, ...general].filter((r) => {
+    if (seen.has(r.id)) return false
+    seen.add(r.id)
+    return true
+  })
 
   // Filter to only series + anime
   const applicable = seriesRows.filter(
@@ -118,10 +170,16 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
     })
   }
 
-  // 3. Sort: currently-airing first, then by most missing episodes
+  // 3. Sort: currently-airing first, then anime before series (weekly anime is
+  //    the priority), then by FEWEST missing episodes — so a huge backfill like
+  //    "Survivor" (162 missing) does not jump the queue and block the anime that
+  //    only need their latest weekly episode.
   candidates.sort((a, b) => {
     if (a.isAiring !== b.isAiring) return a.isAiring ? -1 : 1
-    return b.totalMissing - a.totalMissing
+    const aAnime = a.series.type === 'anime' ? 0 : 1
+    const bAnime = b.series.type === 'anime' ? 0 : 1
+    if (aAnime !== bAnime) return aAnime - bAnime
+    return a.totalMissing - b.totalMissing
   })
 
   // 4. Take top N and process
@@ -129,10 +187,21 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
   const results: FillResult[] = []
 
   for (const candidate of toProcess) {
-    const { series, gaps, isAiring } = candidate
+    const { series, isAiring } = candidate
     const contentId = series.id
     const seriesTitle = series.title
     const isAnime = series.type === 'anime'
+
+    // Cap episodes processed per candidate, per run (see constant above).
+    const caps: SeasonGap[] = []
+    let budget = MAX_GAP_EPISODES_PER_RUN
+    for (const g of candidate.gaps) {
+      if (budget <= 0) break
+      const slice = g.episodes.slice(0, budget)
+      budget -= slice.length
+      caps.push({ season: g.season, episodes: slice })
+    }
+    const gaps = caps
 
     const totalMissing = gaps.reduce((sum, g) => sum + g.episodes.length, 0)
     console.log(

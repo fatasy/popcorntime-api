@@ -1,6 +1,7 @@
 import { and, eq, gt } from 'drizzle-orm'
 import { db } from '../../db'
 import { contents, content_torrents, metadata_cache } from '../../types'
+import { getAnime, getAnimeAiredEpisodeCount } from '../enrichment/myanimelist'
 
 const BASE = 'https://api.themoviedb.org/3'
 const TVMAZE_BASE = 'https://api.tvmaze.com'
@@ -175,6 +176,87 @@ async function cacheSet(source: string, key: string, data: unknown): Promise<voi
 
 // ─── Gap detection ─────────────────────────────────────────────────────────
 
+const JIKAN_DELAY_MS = 400
+
+/**
+ * Gap detection for anime keyed by MAL id (Jikan) rather than TMDB.
+ * MAL-only anime (the vast majority) can't use the TMDB path below.
+ * A single airing season is assumed; the dominant existing season is reused
+ * for newly inserted episodes so the season semantics stay consistent.
+ */
+async function detectAnimeGaps(content: {
+  id: number
+  mal_id: number | null
+  title: string | null
+}): Promise<GapResult> {
+  const malId = content.mal_id
+  // content.id should be non-null here; mal_id guarded by the caller
+  const key = `anime:${malId}`
+  let info = (await cacheGet('jikan', key)) as {
+    status?: string | null
+    episodes?: number | null
+    latestAired?: number | null
+  } | null
+
+  if (!info) {
+    const anime = await getAnime(malId!)
+    await new Promise((r) => setTimeout(r, JIKAN_DELAY_MS))
+    const latestAired = await getAnimeAiredEpisodeCount(malId!)
+    info = {
+      status: anime?.status ?? null,
+      episodes: anime?.episodes ?? null,
+      latestAired,
+    }
+    await cacheSet('jikan', key, info)
+    await new Promise((r) => setTimeout(r, JIKAN_DELAY_MS))
+  }
+
+  const isAiring =
+    info.status === 'Currently Airing' || info.status === 'Currently Publishing'
+  // While airing, MAL `episodes` is usually null -> fall back to latestAired.
+  const episodeCount = info.episodes ?? info.latestAired ?? 0
+  if (episodeCount <= 0) return { gaps: [], isAiring }
+
+  // Existing episodes for this content, across ALL seasons (anime season values
+  // are messy in the DB: NULL/1/2/...). Avoids falsely flagging eps that exist
+  // under a different season label.
+  const existingRows = await db
+    .select({ episode: content_torrents.episode })
+    .from(content_torrents)
+    .where(eq(content_torrents.content_id, content.id))
+  const existing = new Set(
+    existingRows.filter((r): r is { episode: number } => r.episode != null).map((r) => r.episode),
+  )
+
+  // Dominant existing season (default 1) — new eps go under it.
+  const seasonRows = await db
+    .select({ season: content_torrents.season })
+    .from(content_torrents)
+    .where(eq(content_torrents.content_id, content.id))
+  const counts = new Map<number, number>()
+  for (const s of seasonRows) {
+    if (s.season != null && s.season > 0) {
+      counts.set(s.season, (counts.get(s.season) ?? 0) + 1)
+    }
+  }
+  let season = 1
+  let best = 0
+  for (const [k, c] of counts) {
+    if (c > best) {
+      best = c
+      season = k
+    }
+  }
+
+  const expected = Array.from({ length: episodeCount }, (_, i) => i + 1)
+  const missing = expected.filter((ep) => !existing.has(ep))
+
+  return {
+    gaps: missing.length > 0 ? [{ season, episodes: missing }] : [],
+    isAiring,
+  }
+}
+
 /**
  * Detect which seasons/episodes are MISSING for a TV series.
  *
@@ -186,10 +268,12 @@ export async function detectGaps(contentId: number): Promise<GapResult> {
   // 1. Look up content by ID
   const [content] = await db
     .select({
+      id: contents.id,
       tmdb_id: contents.tmdb_id,
       type: contents.type,
       title: contents.title,
       imdb_id: contents.imdb_id,
+      mal_id: contents.mal_id,
     })
     .from(contents)
     .where(eq(contents.id, contentId))
@@ -197,11 +281,18 @@ export async function detectGaps(contentId: number): Promise<GapResult> {
 
   if (!content) throw new Error(`Content ${contentId} not found`)
   if (content.type !== 'series' && content.type !== 'anime') throw new Error(`Content ${contentId} is not a series or anime`)
-  if (content.tmdb_id == null) throw new Error(`Content ${contentId} has no tmdb_id`)
+  if (content.tmdb_id == null) {
+    // MAL-keyed anime have no TMDB id -> use the Jikan path.
+    if (content.type === 'anime' && content.mal_id != null) {
+      return detectAnimeGaps(content)
+    }
+    throw new Error(`Content ${contentId} has no tmdb_id or mal_id`)
+  }
 
   const tmdbId = content.tmdb_id
   const title = content.title ?? ''
   const imdbId = content.imdb_id ?? null
+  let isAiring = false
 
   // 2. Get season list (try TMDB cache → TMDB API → TVMaze cache → TVMaze API)
   const seasonCacheKey = `seasons:${tmdbId}`
@@ -234,7 +325,6 @@ export async function detectGaps(contentId: number): Promise<GapResult> {
   }
 
   const gaps: SeasonGap[] = []
-  let isAiring = false
 
   // 3. For each season, fetch episode list and compare against DB
   for (const s of seasonData.seasons) {

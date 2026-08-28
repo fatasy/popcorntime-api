@@ -61,6 +61,7 @@ export const contents = pgTable('contents', {
   imdb_id: varchar('imdb_id', { length: 16 }),
   mal_id: integer('mal_id'),
   enriched_at: timestamp('enriched_at', { withTimezone: true }),
+  last_enrich_attempt_at: timestamp('last_enrich_attempt_at', { withTimezone: true }),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow(),
   last_gap_fill_at: timestamp('last_gap_fill_at', { withTimezone: true }),

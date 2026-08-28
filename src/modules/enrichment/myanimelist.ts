@@ -9,6 +9,7 @@ export interface JikanAnime {
   synopsis?: string | null
   score?: number | null
   episodes?: number | null
+  status?: string | null
   duration?: string | null
   year?: number | null
   aired?: { prop?: { from?: { year?: number | null } } }
@@ -49,6 +50,51 @@ export async function getAnime(id: number): Promise<JikanAnime | null> {
     return data.data ?? null
   } catch (err) {
     console.warn('[jikan] getAnime failed:', (err as Error).message)
+    return null
+  }
+}
+
+// ─── Aired-episode count (for ongoing anime gap detection) ──────────────────
+
+function maxEpisodeNumber(list?: { episode?: number }[]): number {
+  let m = 0
+  for (const e of list ?? []) {
+    if (typeof e.episode === 'number' && e.episode > m) m = e.episode
+  }
+  return m
+}
+
+/**
+ * Latest episode number that has aired, via Jikan /anime/{id}/episodes.
+ * MAL's `episodes` field is usually null while a show is still airing, so this
+ * is the reliable way to know how far a weekly seasonal anime has come.
+ * Fetches page 1 and (if paginated) the last page, bounded to ~2 requests.
+ */
+export async function getAnimeAiredEpisodeCount(id: number): Promise<number | null> {
+  try {
+    const p1 = await fetch(`${BASE}/anime/${id}/episodes`, {
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!p1.ok) return null
+    const j1 = (await p1.json()) as {
+      data?: { episode?: number }[]
+      pagination?: { last_visible_page?: number; has_next_page?: boolean }
+    }
+    let max = maxEpisodeNumber(j1.data)
+    const lastPage = j1.pagination?.last_visible_page ?? 1
+    if (j1.pagination?.has_next_page && lastPage > 1) {
+      await new Promise((r) => setTimeout(r, 350)) // Jikan rate limit
+      const last = await fetch(`${BASE}/anime/${id}/episodes?page=${lastPage}`, {
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (last.ok) {
+        const jl = (await last.json()) as { data?: { episode?: number }[] }
+        max = Math.max(max, maxEpisodeNumber(jl.data))
+      }
+    }
+    return max || null
+  } catch (err) {
+    console.warn('[jikan] episodes failed:', (err as Error).message)
     return null
   }
 }

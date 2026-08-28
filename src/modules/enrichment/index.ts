@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql, or, lt, desc } from 'drizzle-orm'
 import { db } from '../../db'
 import { contents, metadata_cache, type Content, type NewContent } from '../../types'
 import { normalizeTitle, parseRelease } from '../../lib/parse'
@@ -259,10 +259,26 @@ export async function enrichContent(content: Content): Promise<boolean> {
 
 /** Enrich up to `limit` contents that have not been enriched yet. */
 export async function enrichPending(limit = 50): Promise<number> {
+  // Skip contents that were already attempted within the retry window: items
+  // that never match (e.g. apibay "packs" mis-tagged as anime) must NOT keep
+  // monopolizing the enrichment budget, or freshly-discovered real content
+  // (tmdb/mal enriched) starves forever. Order so never-attempted items go
+  // first (NULLS FIRST) and, among them, newest discovery first.
+  const RETRY_WINDOW_MS = 24 * 60 * 60 * 1000
+  const cutoff = new Date(Date.now() - RETRY_WINDOW_MS)
   const pending = await db
     .select()
     .from(contents)
-    .where(isNull(contents.enriched_at))
+    .where(
+      and(
+        isNull(contents.enriched_at),
+        or(
+          isNull(contents.last_enrich_attempt_at),
+          lt(contents.last_enrich_attempt_at, cutoff),
+        ),
+      ),
+    )
+    .orderBy(sql`${contents.last_enrich_attempt_at} asc nulls first`, desc(contents.created_at))
     .limit(limit)
 
   let enriched = 0
@@ -273,6 +289,11 @@ export async function enrichPending(limit = 50): Promise<number> {
       console.log(`[enrich] ✓ ${content.type} "${content.title}"`)
     } else {
       console.log(`[enrich] – no match for ${content.type} "${content.title}"`)
+      // Record the attempt so we don't re-pick this unmatchable item for 24h.
+      await db
+        .update(contents)
+        .set({ last_enrich_attempt_at: new Date() })
+        .where(eq(contents.id, content.id))
     }
   }
   return enriched

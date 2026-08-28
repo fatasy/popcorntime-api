@@ -2,6 +2,7 @@ import { collectTorrents, type Category } from '../modules/collection'
 import { enrichPending } from '../modules/enrichment'
 import { scrapeFileLists } from '../modules/enrichment/scrape-files'
 import { fillGaps } from '../modules/collection/fill-gaps'
+import { upgradeRecentMovieQuality } from '../modules/collection/movie-quality-upgrade'
 import { groupUngrouped } from '../modules/grouping'
 import { mergeByTmdbId } from '../modules/grouping/merge-series'
 import { runDiscovery } from './discover'
@@ -46,7 +47,7 @@ export async function runPipeline(): Promise<void> {
   console.log('\n[2/3] Enriching unenriched contents…')
   let enriched = 0
   try {
-    enriched = await enrichPending(100)
+    enriched = await enrichPending(50)
   } catch (err) {
     console.error('[pipeline] enrichment failed:', err)
   }
@@ -59,6 +60,16 @@ export async function runPipeline(): Promise<void> {
     console.error('[pipeline] gap filling failed:', err)
   }
   const gapTorrents = gapResults.reduce((s, r) => s + r.torrentsAdded, 0)
+
+  console.log('\n[2.3/3] Upgrading recent-movie source quality…')
+  let qualityUpgraded = 0
+  try {
+    const upgraded = await upgradeRecentMovieQuality(10)
+    qualityUpgraded = upgraded.length
+    if (upgraded.length) console.log(`[quality] upgraded ${upgraded.length} recent movie(s)`)
+  } catch (err) {
+    console.error('[pipeline] movie quality upgrade failed:', err)
+  }
 
   console.log('\n[2.5/3] Merging duplicate series by tmdb_id…')
   let merged = 0
@@ -78,12 +89,12 @@ export async function runPipeline(): Promise<void> {
 
   console.log(
     `\n=== Pipeline done: +${newTorrents} torrents, ${enriched} enriched, ` +
-      `${gapTorrents} gap-filled, ${merged} series merged, ${grouped.created} contents created, ${grouped.matched} matched ===`,
+      `${gapTorrents} gap-filled, ${qualityUpgraded} quality-upgraded, ${merged} series merged, ${grouped.created} contents created, ${grouped.matched} matched ===`,
   )
 
   console.log('\n[4/3] Scraping file lists from LimeTorrents…')
   try {
-    const scraped = await scrapeFileLists(25)
+    const scraped = await scrapeFileLists(10)
     console.log(`[scrape] ${scraped} file lists scraped`)
   } catch (err) {
     console.error('[pipeline] file-list scraping failed:', err)
@@ -91,7 +102,7 @@ export async function runPipeline(): Promise<void> {
 
   console.log('\n[5/3] Pre-resolving torrent metainfo…')
   try {
-    const result = await preResolveTorrentMetadata(25, 4)
+    const result = await preResolveTorrentMetadata(10, 4)
     console.log(
       `[metainfo] ${result.resolved}/${result.attempted} resolved, ${result.failed} failed`,
     )

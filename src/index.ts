@@ -42,6 +42,13 @@ export const app = new Elysia()
     detail: { summary: 'Service info' },
   })
   .get('/health', () => ({ status: 'ok' }), { detail: { summary: 'Health check' } })
+  .get('/public/:file', async ({ params, set }) => {
+    const path = `/root/projetos/popcorntime-api/public/${params.file}`
+    const file = Bun.file(path)
+    if (await file.exists()) return new Response(file)
+    set.status = 404
+    return { error: 'File not found' }
+  })
   .use(catalogRoutes)
   .use(subtitleRoutes)
   .use(authRoutes)

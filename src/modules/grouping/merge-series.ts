@@ -1,54 +1,65 @@
-import { and, eq, isNotNull, sql } from 'drizzle-orm'
+import { and, eq, isNotNull, sql, inArray } from 'drizzle-orm'
 import { db } from '../../db'
 import { contents, content_torrents } from '../../types'
 
 /**
- * Merge series-type contents that share the same tmdb_id.
+ * Merge contents that share the same tmdb_id — covers `series` AND `movie`.
  *
- * For each tmdb_id that has 2+ series contents:
- *   - Pick the one with the most/best metadata (poster, synopsis, rating, cast)
- *     as the canonical content.
+ * Movies were added after 151 duplicate movie rows accumulated (71 groups,
+ * worst: "Terra Nova" ×11): the discovery/grouping paths can create a second
+ * row with the same tmdb_id and nothing ever consolidated them. Grouping key
+ * is (type, tmdb_id) because TMDB movie and tv ids live in separate namespaces.
+ *
+ * For each (type, tmdb_id) that has 2+ contents:
+ *   - Pick the canonical: most linked torrents first (so we keep the filled
+ *     entry), then metadata completeness, then most recently updated.
  *   - Move all content_torrents rows from the others to the canonical one,
- *     preserving season/episode stored on content_torrents.
+ *     preserving season/episode.
  *   - Delete the orphaned content rows.
  *
  * Returns the number of content rows deleted.
  */
 export async function mergeByTmdbId(): Promise<number> {
-  // Find all series-type contents that have a tmdb_id
+  // Find all series/movie contents that have a tmdb_id
   const series = await db
     .select()
     .from(contents)
-    .where(and(eq(contents.type, 'series'), isNotNull(contents.tmdb_id)))
+    .where(and(inArray(contents.type, ['series', 'movie']), isNotNull(contents.tmdb_id)))
 
-  // Group by tmdb_id
-  const byTmdb = new Map<number, typeof series>()
+  // Group by (type, tmdb_id)
+  const byTmdb = new Map<string, typeof series>()
   for (const c of series) {
-    const tid = c.tmdb_id!
-    if (!byTmdb.has(tid)) byTmdb.set(tid, [])
-    byTmdb.get(tid)!.push(c)
+    const key = `${c.type}:${c.tmdb_id!}`
+    if (!byTmdb.has(key)) byTmdb.set(key, [])
+    byTmdb.get(key)!.push(c)
   }
 
   let deleted = 0
   let merged = 0
 
-  for (const [tmdbId, group] of byTmdb) {
+  for (const [key, group] of byTmdb) {
     if (group.length < 2) continue
 
-    // Score each content by metadata completeness
-    const scored = group.map((c) => {
-      let score = 0
-      if (c.poster_url) score += 3
-      if (c.synopsis) score += 3
-      if (c.rating) score += 2
-      if (c.cast_members && c.cast_members.length > 0) score += 2
-      if (c.backdrop_url) score += 1
-      if (c.genres && c.genres.length > 0) score += 1
-      if (c.director) score += 1
-      // Prefer enriched ones
-      if (c.enriched_at) score += 1
-      return { content: c, score }
-    })
+    // Score each content: existing torrents strongly favored, then metadata
+    const scored = await Promise.all(
+      group.map(async (c) => {
+        const cnt = await db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(content_torrents)
+          .where(eq(content_torrents.content_id, c.id))
+        const n = cnt[0]?.n ?? 0
+        let score = n * 5 // any existing content strongly favored
+        if (c.poster_url) score += 3
+        if (c.synopsis) score += 3
+        if (c.rating) score += 2
+        if (c.cast_members && c.cast_members.length > 0) score += 2
+        if (c.backdrop_url) score += 1
+        if (c.genres && c.genres.length > 0) score += 1
+        if (c.director) score += 1
+        if (c.enriched_at) score += 1
+        return { content: c, score, links: n }
+      }),
+    )
 
     // Sort: highest score first, then most recently updated as tiebreaker
     scored.sort((a, b) => {
@@ -77,7 +88,7 @@ export async function mergeByTmdbId(): Promise<number> {
           .values({
             content_id: canonical.id,
             torrent_id: link.torrent_id,
-            is_primary: false, // will be recomputed if needed
+            is_primary: link.is_primary ?? false,
             season: link.season,
             episode: link.episode,
           })
@@ -97,7 +108,7 @@ export async function mergeByTmdbId(): Promise<number> {
     }
 
     console.log(
-      `[merge] "${canonicalTitle}" (tmdb:${tmdbId}): ${merged} merged, ${deleted} deleted`,
+      `[merge] "${canonicalTitle}" (${key}): ${merged} merged, ${deleted} deleted`,
     )
   }
 

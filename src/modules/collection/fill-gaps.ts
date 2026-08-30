@@ -230,58 +230,51 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
 
     if (isAnime) {
       // ─── Anime path: use nyaa.si ─────────────────────────────────────
-      const nyaaCache = new Map<string, RawTorrent[]>()
+      // Search nyaa at SERIES level (bare title), NOT title+episode. Searching
+      // `${title} 08` returns 0 results because nyaa matches whole space-
+      // separated tokens and the episode number lives embedded inside the
+      // release title (S02E08 / - 08 / S01E08), not as a standalone "08".
+      // Querying the bare title once returns the whole season, then we match
+      // episodes via parseRelease on the result set.
+      const seriesQueries = [seriesTitle]
+      const targetSeason = gaps[0] && gaps[0].season != null && gaps[0].season > 0
+        ? gaps[0].season
+        : null
+      if (targetSeason != null && targetSeason > 1) {
+        seriesQueries.push(`${seriesTitle} S${padTwo(targetSeason)}`)
+      }
 
-      for (const gap of gaps) {
-        for (const episodeNum of gap.episodes) {
-          const seasonStr = padTwo(gap.season)
-          const episodeStr = padTwo(episodeNum)
-
-          // Search nyaa.si for this specific season+episode
-          const query = `${seriesTitle} ${episodeStr}`
-          let nyaaResults: RawTorrent[]
-          const cacheKey = query
-
-          if (nyaaCache.has(cacheKey)) {
-            nyaaResults = nyaaCache.get(cacheKey)!
-          } else {
-            try {
-              nyaaResults = await searchNyaa(query, 50)
-              nyaaCache.set(cacheKey, nyaaResults)
-            } catch (err) {
-              console.warn(
-                `[fillGaps] nyaa search failed for "${query}":`,
-                (err as Error).message,
-              )
-              nyaaResults = []
-            }
-          }
-
-          // Match results by parsing S/E from titles
-          const nyaaMatches = nyaaResults
-            .filter((t) => {
-              if ((t.seeds ?? 0) < 1) return false
-              const parsed = parseRelease(t.title)
-              // For anime, episode matching via "Title - 01" pattern
-              if (parsed.episode === episodeNum) return true
-              // Also check S/E patterns
-              if (parsed.season === gap.season && parsed.episode === episodeNum)
-                return true
-              return false
-            })
-            .sort((a, b) => (b.seeds ?? 0) - (a.seeds ?? 0))
-
-          for (const m of nyaaMatches.slice(0, 5)) {
-            matched.push({
-              torrent: m,
-              season: gap.season,
-              episode: episodeNum,
-            })
-          }
+      const nyRes = new Map<string, RawTorrent>()
+      for (const q of seriesQueries) {
+        try {
+          const r = await searchNyaa(q, 50)
+          for (const t of r) if (!nyRes.has(t.hash)) nyRes.set(t.hash, t)
+        } catch (err) {
+          console.warn(`[fillGaps] nyaa search failed for "${q}":`, (err as Error).message)
         }
+      }
+      const nyaaResults = Array.from(nyRes.values())
 
-        // Also search for season packs on nyaa
-        const packQuery = `${seriesTitle} S${padTwo(gap.season)}`
+      // Build the set of episodes we are missing (from the detected gaps).
+      const missingEps = new Set<number>()
+      for (const gap of gaps) for (const ep of gap.episodes) missingEps.add(ep)
+      const anyMissing = missingEps.size > 0
+
+      for (const t of nyaaResults) {
+        if ((t.seeds ?? 0) < 1) continue
+        const parsed = parseRelease(t.title)
+        const ep = parsed.episode
+        if (ep == null) continue
+        const epNum = Number(ep)
+        if (anyMissing && !missingEps.has(epNum)) continue
+        const season = parsed.season ?? targetSeason ?? 1
+        matched.push({ torrent: t, season, episode: epNum })
+      }
+
+      // Also search for season packs on nyaa (bar the episode filters above —
+      // packs are matched by the isPack() heuristic separately).
+      if (targetSeason != null) {
+        const packQuery = `${seriesTitle} S${padTwo(targetSeason)}`
         try {
           const packResults = await searchNyaa(packQuery, 30)
           const viablePacks = packResults.filter((t) => {
@@ -292,7 +285,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
           for (const pack of viablePacks) {
             matched.push({
               torrent: pack,
-              season: gap.season,
+              season: targetSeason,
               episode: -1, // season pack
             })
           }

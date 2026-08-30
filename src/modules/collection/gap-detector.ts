@@ -207,14 +207,54 @@ async function detectAnimeGaps(content: {
       episodes: anime?.episodes ?? null,
       latestAired,
     }
-    await cacheSet('jikan', key, info)
-    await new Promise((r) => setTimeout(r, JIKAN_DELAY_MS))
+    // Only cache a usable Jikan response. When MAL/Jikan is down it often
+    // returns null status + null episodes; caching that poisons the 24h TTL and
+    // leaves the anime permanently "no gaps". Leave it uncached so the next run
+    // re-fetches from Jikan instead of trusting a null-filled entry.
+    if (info.status || info.episodes || info.latestAired) {
+      await cacheSet('jikan', key, info)
+      await new Promise((r) => setTimeout(r, JIKAN_DELAY_MS))
+    }
   }
 
   const isAiring =
     info.status === 'Currently Airing' || info.status === 'Currently Publishing'
   // While airing, MAL `episodes` is usually null -> fall back to latestAired.
-  const episodeCount = info.episodes ?? info.latestAired ?? 0
+  let episodeCount = info.episodes ?? info.latestAired ?? 0
+
+  // New-season anime frequently have an EMPTY episode list on MAL/Jikan while
+  // airing, and MAL/Jikan can also return a null-filled response when it's down
+  // — in both cases episodeCount resolves to 0 and we would wrongly report
+  // "no gaps", leaving the anime permanently unfilled (seen with Black Torch,
+  // Yani Neko, Jaadugar, Marriagetoxin in Aug 2026). When we have no Jikan
+  // episode count at all and the content actually exists in the catalog,
+  // derive the expected episode count from the torrent source (nyaa) so
+  // fillGaps targets the right episodes.
+  if (episodeCount <= 0 && content.title) {
+    try {
+      const { searchNyaa } = await import('../collection/sources/nyaa')
+      const { parseRelease } = await import('../../lib/parse')
+      const results = await searchNyaa(content.title, 50)
+      await new Promise((r) => setTimeout(r, JIKAN_DELAY_MS))
+      let maxEp = 0
+      for (const t of results) {
+        const p = parseRelease(t.title)
+        if (p.episode && Number(p.episode) > maxEp) maxEp = Number(p.episode)
+      }
+      if (maxEp > 0) {
+        console.log(
+          `[detectAnimeGaps] "${content.title}": Jikan episode list empty, derived latest aired = ep ${maxEp} from nyaa`,
+        )
+        episodeCount = maxEp
+      }
+    } catch (err) {
+      console.warn(
+        `[detectAnimeGaps] failed to derive aired count from nyaa for "${content.title}":`,
+        (err as Error).message,
+      )
+    }
+  }
+
   if (episodeCount <= 0) return { gaps: [], isAiring }
 
   // Existing episodes for this content, across ALL seasons (anime season values

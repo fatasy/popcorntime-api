@@ -73,10 +73,25 @@ export const openSubtitlesProvider: SubtitleProvider = {
       else return []
     }
 
-    const res = await fetch(`${BASE}/subtitles?${p.toString()}`, { headers: headers() })
-    if (!res.ok) return []
-    const json = (await res.json()) as any
-    const data: any[] = json?.data ?? []
+    async function runSearch(params: URLSearchParams) {
+      const res = await fetch(`${BASE}/subtitles?${params.toString()}`, { headers: headers() })
+      if (!res.ok) return [] as any[]
+      const json = (await res.json()) as any
+      return (json?.data ?? []) as any[]
+    }
+
+    let data = await runSearch(p)
+
+    // ID-based searches (imdb/tmdb) return 0 for many titles that DO have
+    // subtitles under a plain text query (seen with Toy Story 5 and anime —
+    // OpenSubtitles' parent-id index is incomplete). Retry by title when the
+    // id search came up empty and we have a title to try.
+    if (data.length === 0 && hasId && q.title) {
+      const p2 = new URLSearchParams(p)
+      for (const k of ['tmdb_id', 'imdb_id', 'parent_tmdb_id', 'parent_imdb_id']) p2.delete(k)
+      p2.set('query', q.title)
+      data = await runSearch(p2)
+    }
 
     const out = []
     for (const item of data) {

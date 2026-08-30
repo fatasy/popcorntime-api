@@ -18,6 +18,7 @@ export interface EpisodeTorrent {
   inferred: boolean
   quality: string | null
   size_bytes: number | null
+  collected_at: string | null
 }
 
 /**
@@ -54,6 +55,7 @@ interface LinkedTorrent {
   season: number | null
   episode: number | null
   source: string | null
+  collected_at: Date | null
 }
 
 // ─── Helper ─────────────────────────────────────────────────────────────
@@ -72,6 +74,7 @@ function makeEpisodeTorrent(
     inferred: overrides.inferred ?? false,
     quality: extractQualityLabel(t.title),
     size_bytes: t.size_bytes ?? null,
+    collected_at: t.collected_at ? t.collected_at.toISOString() : null,
   }
 }
 
@@ -109,6 +112,7 @@ export async function resolveEpisodes(contentId: number): Promise<EpisodeInfo[]>
       season: content_torrents.season,
       episode: content_torrents.episode,
       source: torrents.source,
+      collected_at: torrents.collected_at,
     })
     .from(content_torrents)
     .innerJoin(torrents, eq(torrents.id, content_torrents.torrent_id))

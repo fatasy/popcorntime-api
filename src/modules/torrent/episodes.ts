@@ -418,6 +418,7 @@ async function mergeJikanCatalog(
     .select()
     .from(anime_franchise_entries)
     .where(eq(anime_franchise_entries.content_id, contentId))
+  const hasFranchise = franchise.length > 0
   if (franchise.length === 0) {
     franchise = [{
       content_id: contentId,
@@ -461,7 +462,9 @@ async function mergeJikanCatalog(
     }
   }
 
-  const generic = existing.filter((ep) => ep.episode <= 0)
+  // Packs sem episódio específico continuam disponíveis no detalhe/fontes,
+  // mas não viram um card falso "Episódio 0" quando há catálogo de franquia.
+  const generic = hasFranchise ? [] : existing.filter((ep) => ep.episode <= 0)
   return [...byEpisode.values(), ...generic].sort(
     (a, b) => a.season - b.season || a.episode - b.episode,
   )

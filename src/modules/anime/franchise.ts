@@ -136,22 +136,55 @@ export async function resolveCanonicalContentId(contentId: number): Promise<numb
   return row?.canonicalId ?? contentId
 }
 
-function normalizeEpisode(
+function normalizeTorrentPosition(
   rawTitle: string,
   storedEpisode: number | null,
-  entry: AnimeFranchiseSeason,
-  previousSeasonEpisodes: number,
-): number | null {
+  sourceEntry: AnimeFranchiseSeason,
+  entries: AnimeFranchiseSeason[],
+): { season: number; episode: number | null } {
   const parsed = parseRelease(rawTitle)
   const rawEpisode = parsed.episode ?? storedEpisode
-  if (rawEpisode == null || rawEpisode <= 0) return null
+  const titleSeason = parsed.season ?? explicitSeason(rawTitle)
+  const titlePart = explicitPart(rawTitle)
+  const targetEntry =
+    entries.find((entry) => entry.season === titleSeason && entry.part === titlePart) ??
+    entries.find((entry) => entry.season === titleSeason) ??
+    sourceEntry
+  const targetSeason = targetEntry.season
+  if (rawEpisode == null || rawEpisode <= 0) return { season: targetSeason, episode: null }
 
-  // Alguns grupos numeram o anime de forma absoluta (ex.: 73 = T4E1).
-  if (previousSeasonEpisodes > 0 && rawEpisode > (entry.episodeCount ?? 24)) {
-    const local = rawEpisode - previousSeasonEpisodes
-    if (local > 0 && local <= (entry.episodeCount ?? 100)) return local
+  const totals = new Map<number, number>()
+  for (const entry of entries) {
+    totals.set(
+      entry.season,
+      Math.max(totals.get(entry.season) ?? 0, entry.episodeOffset + (entry.episodeCount ?? 0)),
+    )
   }
-  return rawEpisode + entry.episodeOffset
+  const targetTotal = totals.get(targetSeason) ?? targetEntry.episodeCount ?? 0
+
+  // Partes normalmente reiniciam em 1; na API elas continuam a numeração da
+  // temporada (Parte 2 ep. 1 => episódio 13, por exemplo).
+  if (
+    targetEntry.episodeOffset > 0 &&
+    targetEntry.episodeCount != null &&
+    rawEpisode <= targetEntry.episodeCount
+  ) {
+    return { season: targetSeason, episode: targetEntry.episodeOffset + rawEpisode }
+  }
+  if (targetTotal <= 0 || rawEpisode <= targetTotal) {
+    return { season: targetSeason, episode: rawEpisode }
+  }
+
+  // Alguns grupos numeram toda a obra de forma absoluta (ex.: 73 = T4E1).
+  let cumulative = 0
+  for (const season of [...totals.keys()].sort((a, b) => a - b)) {
+    const total = totals.get(season) ?? 0
+    if (rawEpisode <= cumulative + total) {
+      return { season, episode: rawEpisode - cumulative }
+    }
+    cumulative += total
+  }
+  return { season: targetSeason, episode: null }
 }
 
 /**
@@ -184,15 +217,6 @@ export async function consolidateAnimeFranchise(contentId: number): Promise<{
   const sourceById = new Map(related.map((row) => [row.id, row]))
   if (!sourceById.has(canonicalId)) sourceById.set(canonicalId, content)
   const entryByMal = new Map(entries.map((entry) => [entry.malId, entry]))
-
-  const previousSeasonTotals = new Map<number, number>()
-  for (const entry of entries) {
-    let total = 0
-    for (const other of entries) {
-      if (other.season < entry.season) total += other.episodeCount ?? 0
-    }
-    previousSeasonTotals.set(entry.malId, total)
-  }
 
   await db.transaction(async (tx) => {
     for (const entry of entries) {
@@ -243,30 +267,21 @@ export async function consolidateAnimeFranchise(contentId: number): Promise<{
         .where(eq(content_torrents.content_id, sourceId))
 
       for (const link of linked) {
+        const position = normalizeTorrentPosition(link.title, link.episode, entry, entries)
         await tx
           .insert(content_torrents)
           .values({
             content_id: canonicalId,
             torrent_id: link.torrentId,
             is_primary: link.isPrimary,
-            season: entry.season,
-            episode: normalizeEpisode(
-              link.title,
-              link.episode,
-              entry,
-              previousSeasonTotals.get(entry.malId) ?? 0,
-            ),
+            season: position.season,
+            episode: position.episode,
           })
           .onConflictDoUpdate({
             target: [content_torrents.content_id, content_torrents.torrent_id],
             set: {
-              season: entry.season,
-              episode: normalizeEpisode(
-                link.title,
-                link.episode,
-                entry,
-                previousSeasonTotals.get(entry.malId) ?? 0,
-              ),
+              season: position.season,
+              episode: position.episode,
             },
           })
       }

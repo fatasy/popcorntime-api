@@ -266,12 +266,14 @@ export const catalogRoutes = new Elysia()
           : []
         // Classify each torrent's season coverage
         const coverageMap = new Map<number, SeasonCoverage>()
-        for (const t of linked) {
-          try {
-            const coverage = await classifySeasonCoverage(t.title, content.tmdb_id)
-            coverageMap.set(t.id, coverage)
-          } catch {
-            coverageMap.set(t.id, { type: 'unknown', seasons: [], confidence: 'heuristic' })
+        if (franchise.length === 0) {
+          for (const t of linked) {
+            try {
+              const coverage = await classifySeasonCoverage(t.title, content.tmdb_id)
+              coverageMap.set(t.id, coverage)
+            } catch {
+              coverageMap.set(t.id, { type: 'unknown', seasons: [], confidence: 'heuristic' })
+            }
           }
         }
 
@@ -313,7 +315,7 @@ export const catalogRoutes = new Elysia()
         return {
           ...content,
           seasons,
-          season_count: Math.max(bySeason.size, franchiseSeasonCount),
+          season_count: franchiseSeasonCount || bySeason.size,
           catalog_seasons: franchise,
         }
       }

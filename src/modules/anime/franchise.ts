@@ -92,9 +92,9 @@ export async function discoverAnimeFranchise(seedMalId: number): Promise<AnimeFr
   const result: AnimeFranchiseSeason[] = []
   let currentSeason = 0
   for (const anime of records) {
-    const title = anime.title_english ?? anime.title ?? `MAL ${anime.mal_id}`
-    const parsedSeason = explicitSeason(`${title} ${anime.title ?? ''}`)
-    const part = explicitPart(`${title} ${anime.title ?? ''}`)
+    const title = anime.title ?? anime.title_english ?? `MAL ${anime.mal_id}`
+    const parsedSeason = explicitSeason(`${anime.title_english ?? ''} ${title}`)
+    const part = explicitPart(`${anime.title_english ?? ''} ${title}`)
     const season = parsedSeason ?? (part > 1 && currentSeason > 0 ? currentSeason : currentSeason + 1)
     currentSeason = Math.max(currentSeason, season)
 

@@ -231,7 +231,9 @@ async function detectAnimeGaps(content: {
         gaps.push({
           season: entry.season_number,
           episodes: missing,
-          searchTitle: entry.title_english ?? entry.title,
+          // O título romanizado costuma conter "2nd Season/Part 2" e evita
+          // falsos positivos do número 2 em codecs como AAC 2.0 no Nyaa.
+          searchTitle: entry.title,
           episodeOffset: entry.episode_offset,
           malId: entry.mal_id,
         })

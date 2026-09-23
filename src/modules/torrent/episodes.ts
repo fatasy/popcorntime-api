@@ -483,6 +483,36 @@ async function mergeJikanCatalog(
     }
   }
 
+  // Packs não representam "episódio 0": distribui a fonte pelos episódios da
+  // temporada ou somente pelo cour indicado no nome do release.
+  for (const generic of existing.filter((episode) => episode.episode <= 0 && episode.season > 0)) {
+    for (const torrent of generic.torrents) {
+      const partMatch = torrent.title.match(/\bpart\s*(\d{1,2})\b/i)
+      const part = partMatch ? Number(partMatch[1]) : null
+      const entry = part == null
+        ? null
+        : franchise.find(
+            (candidate) =>
+              candidate.season_number === generic.season && candidate.part_number === part,
+          )
+      const start = entry ? entry.episode_offset + 1 : 1
+      const end = entry?.episode_count != null
+        ? entry.episode_offset + entry.episode_count
+        : Number.POSITIVE_INFINITY
+      for (const episode of byEpisode.values()) {
+        if (episode.season !== generic.season || episode.episode < start || episode.episode > end) {
+          continue
+        }
+        if (episode.torrents.some((candidate) => candidate.hash === torrent.hash)) continue
+        episode.torrents.push({
+          ...torrent,
+          file_index: episode.episode - start,
+          inferred: true,
+        })
+      }
+    }
+  }
+
   // Packs sem episódio específico continuam disponíveis no detalhe/fontes,
   // mas não viram um card falso "Episódio 0" quando há catálogo de franquia.
   const generic = hasFranchise ? [] : existing.filter((ep) => ep.episode <= 0)

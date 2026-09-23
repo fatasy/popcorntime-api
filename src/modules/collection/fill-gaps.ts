@@ -280,7 +280,7 @@ export async function fillGaps(
         const searchTitle = gap.searchTitle ?? seriesTitle
         const episodeOffset = gap.episodeOffset ?? 0
         const queries = [searchTitle]
-        if (targetSeason > 1 && !/\bseason\b|\b\d+(?:st|nd|rd|th) season\b/i.test(searchTitle)) {
+        if (!/\bseason\b|\b\d+(?:st|nd|rd|th) season\b/i.test(searchTitle)) {
           queries.push(`${searchTitle} S${padTwo(targetSeason)}`)
         }
 

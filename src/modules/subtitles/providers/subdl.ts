@@ -22,6 +22,10 @@ function titleVariants(title: string): string[] {
   // drop a trailing "Part N"/"Season N"/roman-numeral-ish suffix
   const stripped = t.replace(/\s+(?:part|season|s)\s*\d+$/i, '').trim()
   if (stripped && stripped !== t) variants.push(stripped)
+  const ordinalSeason = t
+    .replace(/\s+\d+(?:st|nd|rd|th)\s+season(?:\s+part\s*\d+)?$/i, '')
+    .trim()
+  if (ordinalSeason && ordinalSeason !== t) variants.push(ordinalSeason)
   return Array.from(new Set(variants.filter((v) => v.length >= 3)))
 }
 
@@ -42,6 +46,7 @@ export const subdlProvider: SubtitleProvider = {
     p.set('subs_per_page', '30')
     if (q.type === 'series') {
       p.set('type', 'tv')
+      if (q.isAnime && q.season != null) p.set('season_number', String(q.season))
       if (q.episode != null) p.set('episode_number', String(q.episode))
     } else {
       p.set('type', 'movie')
@@ -80,13 +85,34 @@ export const subdlProvider: SubtitleProvider = {
       }
     }
 
+    // Em anime, os metadados de episódio/temporada do SubDL são irregulares:
+    // a busca exata às vezes retorna zero mesmo quando o catálogo textual tem
+    // a legenda. Refaz sem os filtros numéricos e valida a faixa abaixo.
+    if (subs.length === 0 && q.isAnime && q.title) {
+      for (const variant of titleVariants(q.title)) {
+        const broad = new URLSearchParams(p)
+        broad.delete('tmdb_id')
+        broad.delete('imdb_id')
+        broad.delete('season_number')
+        broad.delete('episode_number')
+        broad.set('film_name', variant)
+        subs = await run(broad)
+        if (subs.length > 0) break
+      }
+    }
+
     const out = []
     for (const s of subs) {
       if (!s?.url) continue
       const canon = canonicalLang(s.language || s.lang)
+      const release = String(s.release_name || s.name || '')
+      if (q.isAnime && q.season != null) {
+        const explicitSeason = release.match(/\bS(\d{1,2})(?:E\d+)?\b/i)
+        const resultSeason = explicitSeason ? Number(explicitSeason[1]) : Number(s.season ?? 0)
+        if (resultSeason > 0 && resultSeason !== q.season) continue
+      }
       // Episode sanity check: when the client asked for a specific episode,
-      // drop entries whose episode range clearly doesn't contain it. SubDL
-      // tags anime with junk season numbers, so season is ignored here.
+      // drop entries whose episode range clearly doesn't contain it.
       if (q.type === 'series' && q.episode != null) {
         const from = Number(s.episode_from ?? s.episode ?? 0)
         const to = Number(s.episode_end ?? s.episode ?? 0)
@@ -97,7 +123,7 @@ export const subdlProvider: SubtitleProvider = {
         ref: s.url as string, // caminho do .zip
         lang: canon,
         langLabel: langLabel(canon),
-        release: s.release_name || s.name || '',
+        release,
         downloads: 0,
         rating: 0,
         hashMatch: false,

@@ -2,6 +2,7 @@ export type MediaType = 'movie' | 'series'
 
 export interface SubtitleQuery {
   type: MediaType
+  isAnime?: boolean
   imdbId?: string // "tt1254207"
   tmdbId?: number
   season?: number // séries

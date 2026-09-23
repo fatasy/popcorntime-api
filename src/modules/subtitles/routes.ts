@@ -1,12 +1,13 @@
 import { Elysia, t } from 'elysia'
-import { eq } from 'drizzle-orm'
+import { asc, eq } from 'drizzle-orm'
 import { db } from '../../db'
-import { contents } from '../../types'
+import { anime_franchise_entries, contents } from '../../types'
 import { env } from '../../env'
-import { encodeToken, fetchVttByToken, hasProviders, searchSubtitles } from './aggregator'
+import { encodeToken, fetchVttByToken, hasProviders, searchSubtitleVariants } from './aggregator'
 import type { SubtitleQuery } from './types'
 import { readdirSync, existsSync } from 'fs'
 import { join } from 'path'
+import { resolveCanonicalContentId } from '../anime/franchise'
 
 const DEFAULT_LANGS = env.SUBTITLE_LANGS.split(',')
   .map((s) => s.trim())
@@ -22,7 +23,8 @@ export const subtitleRoutes = new Elysia()
         set.status = 400
         return { error: 'Invalid id' }
       }
-      const rows = await db.select().from(contents).where(eq(contents.id, id)).limit(1)
+      const canonicalId = await resolveCanonicalContentId(id)
+      const rows = await db.select().from(contents).where(eq(contents.id, canonicalId)).limit(1)
       const content = rows[0]
       if (!content) {
         set.status = 404
@@ -37,22 +39,68 @@ export const subtitleRoutes = new Elysia()
         ? query.lang.split(',').map((s) => s.trim()).filter(Boolean)
         : DEFAULT_LANGS
 
+      const season = query.season != null ? Number(query.season) : undefined
+      const episode = query.episode != null ? Number(query.episode) : undefined
       const q: SubtitleQuery = {
         type: content.type === 'movie' ? 'movie' : 'series',  // anime, series → series
+        isAnime: content.type === 'anime',
         imdbId: content.imdb_id ?? undefined,
         tmdbId: content.tmdb_id ?? undefined,
         title: content.title,
         year: content.year ?? undefined,
         languages: langs,
-        season: query.season != null ? Number(query.season) : undefined,
-        episode: query.episode != null ? Number(query.episode) : undefined,
+        season,
+        episode,
       }
 
-      // Copiar o array para não mutar o cache compartilhado do searchSubtitles
-      const results = [...(await searchSubtitles(q))]
+      const variants: SubtitleQuery[] = [q]
+      if (content.type === 'anime' && season != null && episode != null) {
+        const franchise = await db
+          .select()
+          .from(anime_franchise_entries)
+          .where(eq(anime_franchise_entries.content_id, canonicalId))
+          .orderBy(
+            asc(anime_franchise_entries.season_number),
+            asc(anime_franchise_entries.part_number),
+          )
+        const entry = franchise
+          .filter((item) => item.season_number === season)
+          .sort((a, b) => b.episode_offset - a.episode_offset)
+          .find(
+            (item) =>
+              episode > item.episode_offset &&
+              (item.episode_count == null ||
+                episode <= item.episode_offset + item.episode_count),
+          )
+
+        if (entry) {
+          const localEpisode = Math.max(1, episode - entry.episode_offset)
+          const seasonalTitles = Array.from(
+            new Set([entry.title, entry.title_english].filter((title): title is string => !!title?.trim())),
+          )
+          for (const title of seasonalTitles) {
+            // Usa o título próprio da temporada/parte e reinicia o episódio,
+            // mas mantém a temporada lógica como filtro de segurança. Sem o
+            // filtro, o OpenSubtitles pode ignorar o título e devolver qualquer
+            // série que tenha o mesmo número de episódio.
+            variants.push({
+              type: 'series',
+              isAnime: true,
+              title,
+              year: entry.year ?? content.year ?? undefined,
+              languages: langs,
+              season,
+              episode: localEpisode,
+            })
+          }
+        }
+      }
+
+      // Copiar o array para não mutar caches compartilhados pelo agregador.
+      const results = [...(await searchSubtitleVariants(variants))]
 
       // Adicionar legendas locais (armazenadas em local-subtitles/{contentId}/)
-      const localDir = join(import.meta.dir, '..', '..', '..', 'local-subtitles', String(id))
+      const localDir = join(import.meta.dir, '..', '..', '..', 'local-subtitles', String(canonicalId))
       if (existsSync(localDir)) {
         const files = readdirSync(localDir).filter(f => f.endsWith('.srt'))
         for (const file of files) {
@@ -60,7 +108,7 @@ export const subtitleRoutes = new Elysia()
           const label = file.replace(/\.srt$/, '')
           results.push({
             provider: 'local',
-            ref: `${id}:${file}`,
+            ref: `${canonicalId}:${file}`,
             lang,
             langLabel: lang === 'pt-BR' ? 'Português (Brasil)' : 'Inglês',
             release: label,

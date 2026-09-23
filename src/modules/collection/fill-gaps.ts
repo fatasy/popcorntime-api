@@ -25,6 +25,11 @@ export interface FillGapsOptions {
   forceCatalog?: boolean
   /** Limite por conteúdo; o pipeline regular continua conservador em 8 episódios. */
   maxEpisodesPerContent?: number
+  /**
+   * Força uma nova busca para um episódio específico, mesmo quando ele já tem
+   * fontes. Usado pelo botão "Adicionar fontes" do card do episódio.
+   */
+  targetEpisode?: { season: number; episode: number }
 }
 
 interface MatchedTorrent {
@@ -203,14 +208,48 @@ export async function fillGaps(
     const seriesTitle = series.title
 
     let result: GapResult
-    try {
-      result = await detectGaps(contentId, { force: options.forceCatalog })
-    } catch (err) {
-      console.warn(
-        `[fillGaps] detectGaps failed for "${seriesTitle}" (id=${contentId}):`,
-        (err as Error).message,
-      )
-      continue
+    if (options.targetEpisode) {
+      const target = options.targetEpisode
+      const gap: SeasonGap = {
+        season: target.season,
+        episodes: [target.episode],
+      }
+
+      // Para anime, o episódio lógico pode pertencer a uma parte/cour com
+      // título e numeração próprios. A busca direcionada precisa usar essa
+      // entrada — por exemplo T2E13 vira episódio 1 da parte 2.
+      if (series.type === 'anime') {
+        const entries = await db
+          .select()
+          .from(anime_franchise_entries)
+          .where(eq(anime_franchise_entries.content_id, contentId))
+        const entry = entries
+          .filter((item) => item.season_number === target.season)
+          .sort((a, b) => b.episode_offset - a.episode_offset)
+          .find(
+            (item) =>
+              target.episode > item.episode_offset &&
+              (item.episode_count == null ||
+                target.episode <= item.episode_offset + item.episode_count),
+          )
+        if (entry) {
+          gap.searchTitle = entry.title
+          gap.episodeOffset = entry.episode_offset
+          gap.malId = entry.mal_id
+        }
+      }
+
+      result = { gaps: [gap], isAiring: false }
+    } else {
+      try {
+        result = await detectGaps(contentId, { force: options.forceCatalog })
+      } catch (err) {
+        console.warn(
+          `[fillGaps] detectGaps failed for "${seriesTitle}" (id=${contentId}):`,
+          (err as Error).message,
+        )
+        continue
+      }
     }
 
     if (result.gaps.length === 0) {
@@ -303,7 +342,15 @@ export async function fillGaps(
           const parsed = parseRelease(torrent.title)
           if (parsed.episode == null) continue
           const releaseSeason = parsed.season ?? explicitAnimeSeason(torrent.title)
-          if (releaseSeason != null && releaseSeason !== targetSeason) continue
+          // Catálogos de anime frequentemente tratam cada entrada MAL como uma
+          // série independente e rotulam a 2ª/3ª temporada canônica como S01.
+          // Como a consulta já usa o título específico da entrada, S01 também
+          // é válido nesse caso.
+          if (
+            releaseSeason != null &&
+            releaseSeason !== targetSeason &&
+            !(gap.malId != null && releaseSeason === 1)
+          ) continue
           const rawEpisode = Number(parsed.episode)
           const episode = missing.has(rawEpisode)
             ? rawEpisode

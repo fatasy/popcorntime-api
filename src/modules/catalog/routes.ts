@@ -25,16 +25,73 @@ import { jwtPlugin } from '../auth/jwt'
 import { resolveAuth } from '../auth/guard'
 import { refreshCatalogContent, type CatalogRefreshResult, type RefreshScope } from './refresh'
 import { resolveCanonicalContentId } from '../anime/franchise'
+import { fillGaps } from '../collection/fill-gaps'
 
 // Evita que dois cliques (ou dois dispositivos) disparem o mesmo crawler em
 // paralelo para um título. Todos aguardam a execução já em curso.
 const activeRefreshes = new Map<number, Promise<CatalogRefreshResult>>()
+
+interface EpisodeSourceRefreshResult {
+  contentId: number
+  season: number
+  episode: number
+  sourcesFound: number
+  sourcesAdded: number
+  refreshedAt: string
+}
+
+const activeEpisodeRefreshes = new Map<string, Promise<EpisodeSourceRefreshResult>>()
 
 function refreshOnce(id: number, scope: RefreshScope): Promise<CatalogRefreshResult> {
   const running = activeRefreshes.get(id)
   if (running) return running
   const task = refreshCatalogContent(id, scope).finally(() => activeRefreshes.delete(id))
   activeRefreshes.set(id, task)
+  return task
+}
+
+async function countEpisodeSources(contentId: number, season: number, episode: number): Promise<number> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(content_torrents)
+    .where(
+      and(
+        eq(content_torrents.content_id, contentId),
+        eq(content_torrents.season, season),
+        or(eq(content_torrents.episode, episode), isNull(content_torrents.episode)),
+      ),
+    )
+  return row?.value ?? 0
+}
+
+function refreshEpisodeSourcesOnce(
+  contentId: number,
+  season: number,
+  episode: number,
+): Promise<EpisodeSourceRefreshResult> {
+  const key = `${contentId}:${season}:${episode}`
+  const running = activeEpisodeRefreshes.get(key)
+  if (running) return running
+
+  const task = (async () => {
+    const before = await countEpisodeSources(contentId, season, episode)
+    await fillGaps(1, {
+      contentId,
+      maxEpisodesPerContent: 1,
+      targetEpisode: { season, episode },
+    })
+    const after = await countEpisodeSources(contentId, season, episode)
+    return {
+      contentId,
+      season,
+      episode,
+      sourcesFound: after,
+      sourcesAdded: Math.max(0, after - before),
+      refreshedAt: new Date().toISOString(),
+    }
+  })().finally(() => activeEpisodeRefreshes.delete(key))
+
+  activeEpisodeRefreshes.set(key, task)
   return task
 }
 
@@ -416,6 +473,65 @@ export const catalogRoutes = new Elysia()
       }),
       detail: {
         summary: 'Refresh one title from external catalogs and torrent sources',
+        tags: ['catalog'],
+      },
+    },
+  )
+  // POST /catalog/:id/episodes/:season/:episode/refresh — busca novas
+  // fontes/qualidades apenas para o card selecionado.
+  .post(
+    '/catalog/:id/episodes/:season/:episode/refresh',
+    async ({ params, jwt, headers, set }) => {
+      const auth = await resolveAuth(jwt, headers)
+      if (!auth.ok) {
+        set.status = auth.status
+        return { error: auth.error }
+      }
+
+      const requestedId = Number(params.id)
+      const season = Number(params.season)
+      const episode = Number(params.episode)
+      if (
+        !Number.isInteger(requestedId) ||
+        !Number.isInteger(season) ||
+        !Number.isInteger(episode) ||
+        season < 1 ||
+        episode < 0
+      ) {
+        set.status = 400
+        return { error: 'Invalid content, season or episode' }
+      }
+
+      const contentId = await resolveCanonicalContentId(requestedId)
+      const [content] = await db
+        .select({ type: contents.type })
+        .from(contents)
+        .where(eq(contents.id, contentId))
+        .limit(1)
+      if (!content) {
+        set.status = 404
+        return { error: 'Content not found' }
+      }
+      if (content.type !== 'series' && content.type !== 'anime') {
+        set.status = 400
+        return { error: 'Content is not a series or anime' }
+      }
+
+      try {
+        return await refreshEpisodeSourcesOnce(contentId, season, episode)
+      } catch (error) {
+        set.status = 502
+        return { error: (error as Error).message }
+      }
+    },
+    {
+      params: t.Object({
+        id: t.String(),
+        season: t.String(),
+        episode: t.String(),
+      }),
+      detail: {
+        summary: 'Refresh torrent sources for one episode',
         tags: ['catalog'],
       },
     },

@@ -31,7 +31,7 @@ function rank(a: SubtitleResult, b: SubtitleResult): number {
 const searchCache = new Map<string, { at: number; results: SubtitleResult[] }>()
 
 function cacheKey(q: SubtitleQuery): string {
-  return [q.type, q.imdbId ?? '', q.tmdbId ?? '', q.season ?? '', q.episode ?? '', q.title ?? '', [...q.languages].sort().join('+')].join('|')
+  return [q.type, q.isAnime ? 'anime' : '', q.imdbId ?? '', q.tmdbId ?? '', q.season ?? '', q.episode ?? '', q.title ?? '', [...q.languages].sort().join('+')].join('|')
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -66,6 +66,30 @@ export async function searchSubtitles(q: SubtitleQuery): Promise<SubtitleResult[
   return deduped
 }
 
+/**
+ * Pesquisa variações de um mesmo episódio (título canônico, título MAL da
+ * temporada e numeração absoluta) e entrega uma lista única já ranqueada.
+ */
+export async function searchSubtitleVariants(
+  queries: SubtitleQuery[],
+): Promise<SubtitleResult[]> {
+  const unique = new Map<string, SubtitleQuery>()
+  for (const query of queries) unique.set(cacheKey(query), query)
+
+  const batches = await Promise.all(
+    Array.from(unique.values()).map((query) => searchSubtitles(query)),
+  )
+  const seen = new Set<string>()
+  const merged = batches.flat().filter((result) => {
+    const key = `${result.provider}:${result.ref}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  merged.sort(rank)
+  return merged
+}
+
 // ─── Token opaco p/ a URL de download (esconde provider/ref do cliente) ───
 export function encodeToken(r: SubtitleResult): string {
   return Buffer.from(JSON.stringify({ p: r.provider, r: r.ref }), 'utf8').toString('base64url')
@@ -84,6 +108,7 @@ export async function fetchVttByToken(token: string): Promise<string> {
   // Local provider: ref = "contentId:filename"
   if (p === 'local') {
     const [contentId, ...rest] = r.split(':')
+    if (!contentId) throw new Error('Referência de legenda local inválida')
     const filename = rest.join(':')
     const localDir = join(import.meta.dir, '..', '..', '..', 'local-subtitles', contentId)
     const filepath = join(localDir, filename)

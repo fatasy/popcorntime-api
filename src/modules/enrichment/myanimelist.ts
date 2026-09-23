@@ -115,6 +115,29 @@ export async function getAnimeFull(id: number): Promise<JikanAnimeFull | null> {
     }
     if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 750))
   }
+
+  // O inverso também acontece em alguns IDs: `/relations` falha e `/full`
+  // responde normalmente (ex.: MAL 59970). Tenta a representação completa
+  // como fallback, mantendo a regra de nunca devolver uma cadeia parcial.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(`${BASE}/anime/${id}/full`, {
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (res.ok) {
+        const data = (await res.json()) as { data?: JikanAnimeFull }
+        return data.data ?? null
+      }
+      if (res.status !== 429 && res.status < 500) return null
+      console.warn(`[jikan] getAnimeFull fallback mal:${id} HTTP ${res.status} (attempt ${attempt}/3)`)
+    } catch (err) {
+      console.warn(
+        `[jikan] getAnimeFull fallback mal:${id} failed (attempt ${attempt}/3):`,
+        (err as Error).message,
+      )
+    }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 750))
+  }
   return null
 }
 

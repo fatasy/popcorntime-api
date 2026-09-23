@@ -52,6 +52,14 @@ function padTwo(n: number): string {
   return String(n).padStart(2, '0')
 }
 
+function explicitAnimeSeason(title: string): number | null {
+  const match =
+    title.match(/\bs(\d{1,2})(?:e\d+)?\b/i) ??
+    title.match(/\bseason\s*(\d{1,2})\b/i) ??
+    title.match(/\b(\d{1,2})(?:st|nd|rd|th)\s+season\b/i)
+  return match ? Number(match[1]) : null
+}
+
 // Max missing episodes to search per candidate, per pipeline run. Keeps a huge
 // backfill (or a completely-unfilled seasonal anime) from monopolizing the run
 // with hundreds of nyaa/SolidTorrents calls. Each run advances by this much.
@@ -291,6 +299,8 @@ export async function fillGaps(
           if ((torrent.seeds ?? 0) < 1) continue
           const parsed = parseRelease(torrent.title)
           if (parsed.episode == null) continue
+          const releaseSeason = parsed.season ?? explicitAnimeSeason(torrent.title)
+          if (releaseSeason != null && releaseSeason !== targetSeason) continue
           const rawEpisode = Number(parsed.episode)
           const episode = missing.has(rawEpisode)
             ? rawEpisode

@@ -495,10 +495,16 @@ async function mergeJikanCatalog(
             (candidate) =>
               candidate.season_number === generic.season && candidate.part_number === part,
           )
-      const start = entry ? entry.episode_offset + 1 : 1
-      const end = entry?.episode_count != null
-        ? entry.episode_offset + entry.episode_count
-        : Number.POSITIVE_INFINITY
+      const range =
+        torrent.title.match(/\s-\s(?:s\d{1,2}e)?(\d{1,3})\s*[~–-]\s*(?:s\d{1,2}e)?(\d{1,3})\b/i) ??
+        torrent.title.match(/\bs\d{1,2}e(\d{1,3})\s*-\s*(?:s\d{1,2}e)?(\d{1,3})\b/i)
+      const offset = entry?.episode_offset ?? 0
+      const start = range ? offset + Number(range[1]) : offset + 1
+      const end = range
+        ? offset + Number(range[2])
+        : entry?.episode_count != null
+          ? entry.episode_offset + entry.episode_count
+          : Number.POSITIVE_INFINITY
       for (const episode of byEpisode.values()) {
         if (episode.season !== generic.season || episode.episode < start || episode.episode > end) {
           continue

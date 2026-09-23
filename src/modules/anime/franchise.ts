@@ -151,6 +151,10 @@ function normalizeTorrentPosition(
     entries.find((entry) => entry.season === titleSeason) ??
     sourceEntry
   const targetSeason = targetEntry.season
+  const isRange =
+    /\s-\s(?:s\d{1,2}e)?\d{1,3}\s*[~–-]\s*(?:s\d{1,2}e)?\d{1,3}\b/i.test(rawTitle) ||
+    /\bs\d{1,2}e\d{1,3}\s*-\s*(?:s\d{1,2}e)?\d{1,3}\b/i.test(rawTitle)
+  if (isRange) return { season: targetSeason, episode: null }
   if (rawEpisode == null || rawEpisode <= 0) return { season: targetSeason, episode: null }
 
   const totals = new Map<number, number>()

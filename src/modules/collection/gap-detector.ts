@@ -188,11 +188,11 @@ async function detectAnimeGaps(content: {
   id: number
   mal_id: number | null
   title: string | null
-}): Promise<GapResult> {
+}, force = false): Promise<GapResult> {
   const malId = content.mal_id
   // content.id should be non-null here; mal_id guarded by the caller
   const key = `anime:${malId}`
-  let info = (await cacheGet('jikan', key)) as {
+  let info = (force ? null : await cacheGet('jikan', key)) as {
     status?: string | null
     episodes?: number | null
     latestAired?: number | null
@@ -304,7 +304,10 @@ async function detectAnimeGaps(content: {
  * against what we already have in the database. Uses metadata_cache with
  * 24h TTL to avoid excessive API calls.
  */
-export async function detectGaps(contentId: number): Promise<GapResult> {
+export async function detectGaps(
+  contentId: number,
+  options: { force?: boolean } = {},
+): Promise<GapResult> {
   // 1. Look up content by ID
   const [content] = await db
     .select({
@@ -324,7 +327,7 @@ export async function detectGaps(contentId: number): Promise<GapResult> {
   if (content.tmdb_id == null) {
     // MAL-keyed anime have no TMDB id -> use the Jikan path.
     if (content.type === 'anime' && content.mal_id != null) {
-      return detectAnimeGaps(content)
+      return detectAnimeGaps(content, options.force)
     }
     throw new Error(`Content ${contentId} has no tmdb_id or mal_id`)
   }
@@ -336,7 +339,7 @@ export async function detectGaps(contentId: number): Promise<GapResult> {
 
   // 2. Get season list (try TMDB cache → TMDB API → TVMaze cache → TVMaze API)
   const seasonCacheKey = `seasons:${tmdbId}`
-  let seasonData = (await cacheGet('tmdb', seasonCacheKey)) as TmdbSeasonData | null
+  let seasonData = (options.force ? null : await cacheGet('tmdb', seasonCacheKey)) as TmdbSeasonData | null
 
   if (!seasonData) {
     try {
@@ -356,7 +359,7 @@ export async function detectGaps(contentId: number): Promise<GapResult> {
     } catch (tmdbErr) {
       console.warn(`[detectGaps] TMDB failed for #${contentId}, trying TVMaze: ${(tmdbErr as Error).message}`)
       // Try TVMaze
-      seasonData = (await cacheGet('tvmaze', seasonCacheKey)) as TmdbSeasonData | null
+      seasonData = (options.force ? null : await cacheGet('tvmaze', seasonCacheKey)) as TmdbSeasonData | null
       if (!seasonData) {
         seasonData = await tvmazeGetSeasons(title, imdbId)
         await cacheSet('tvmaze', seasonCacheKey, seasonData)
@@ -373,7 +376,7 @@ export async function detectGaps(contentId: number): Promise<GapResult> {
 
     // a. Get episode list (try TMDB cache → TMDB → TVMaze cache → TVMaze)
     const epCacheKey = `episodes:${tmdbId}:${seasonNum}`
-    let episodeData = (await cacheGet('tmdb', epCacheKey)) as TmdbEpisodeData | null
+    let episodeData = (options.force ? null : await cacheGet('tmdb', epCacheKey)) as TmdbEpisodeData | null
 
     if (!episodeData) {
       try {
@@ -389,7 +392,7 @@ export async function detectGaps(contentId: number): Promise<GapResult> {
         await cacheSet('tmdb', epCacheKey, episodeData)
       } catch (tmdbErr) {
         console.warn(`[detectGaps] TMDB S${seasonNum} failed, trying TVMaze: ${(tmdbErr as Error).message}`)
-        episodeData = (await cacheGet('tvmaze', epCacheKey)) as TmdbEpisodeData | null
+        episodeData = (options.force ? null : await cacheGet('tvmaze', epCacheKey)) as TmdbEpisodeData | null
         if (!episodeData) {
           episodeData = await tvmazeGetEpisodes(title, imdbId, seasonNum)
           await cacheSet('tvmaze', epCacheKey, episodeData)

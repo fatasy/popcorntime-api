@@ -1,7 +1,8 @@
-import { and, asc, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, gt, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { contents, content_torrents, torrents, torrent_episodes, metadata_cache } from '../../types'
 import { getTV, getSeasonEpisodes } from '../enrichment/tmdb'
+import { getAnimeEpisodes, type JikanEpisode } from '../enrichment/myanimelist'
 import * as aniskip from '../enrichment/aniskip'
 import { parseRelease } from '../../lib/parse'
 import { classifySeasonCoverage, type SeasonCoverage } from './season-coverage'
@@ -43,6 +44,9 @@ export interface EpisodeInfo {
   air_date: string | null
   torrents: EpisodeTorrent[]
   markers?: EpisodeMarkers | null
+  filler?: boolean | null
+  recap?: boolean | null
+  metadata_source?: 'tmdb' | 'jikan' | null
 }
 
 interface LinkedTorrent {
@@ -89,7 +93,10 @@ function makeEpisodeTorrent(
  * Strategy B (heuristic fallback): when there is no `tmdb_id` or TMDB fails,
  * parse season/episode from torrent titles via regex.
  */
-export async function resolveEpisodes(contentId: number): Promise<EpisodeInfo[]> {
+export async function resolveEpisodes(
+  contentId: number,
+  options: { forceExternal?: boolean } = {},
+): Promise<EpisodeInfo[]> {
   // 1. Load content
   const [content] = await db
     .select({ type: contents.type, tmdb_id: contents.tmdb_id, mal_id: contents.mal_id, title: contents.title })
@@ -132,6 +139,13 @@ export async function resolveEpisodes(contentId: number): Promise<EpisodeInfo[]>
     }
   } else {
     episodes = resolveHeuristic(linked)
+  }
+
+  // Anime sem TMDB ainda precisa exibir o catálogo externo inteiro, inclusive
+  // episódios sem fonte. Jikan fornece a lista; os torrents já resolvidos são
+  // mesclados pelo número do episódio.
+  if (!content.tmdb_id && content.mal_id) {
+    episodes = await mergeJikanCatalog(content.mal_id, episodes, !!options.forceExternal)
   }
 
   // 4. Best-effort: anexa marcadores de abertura/créditos via AniSkip (anime com
@@ -205,6 +219,13 @@ async function resolveWithTmdb(
         confidence: 'heuristic',
       })
     }
+  }
+
+  // A lista visual deve nascer do catálogo externo, não dos torrents. Assim um
+  // episódio novo aparece imediatamente como indisponível enquanto a busca de
+  // fontes está em andamento (ou quando nenhuma fonte foi encontrada).
+  for (const key of tmdbEpisodes.keys()) {
+    if (!episodeMap.has(key)) episodeMap.set(key, [])
   }
 
   for (const t of linked) {
@@ -323,6 +344,7 @@ async function resolveWithTmdb(
         return aIsEztv - bIsEztv
       }),
       markers: runtimeSec ? { runtime_sec: runtimeSec, source: 'tmdb' } : null,
+      metadata_source: 'tmdb',
     })
   }
 
@@ -332,6 +354,83 @@ async function resolveWithTmdb(
   await cacheResults(contentId, result)
 
   return result
+}
+
+// ─── Jikan episode catalog ────────────────────────────────────────────────
+
+const JIKAN_EPISODE_CACHE_HOURS = 6
+
+async function loadJikanCatalog(malId: number, force: boolean): Promise<JikanEpisode[]> {
+  const key = String(malId)
+  if (!force) {
+    const cutoff = new Date(Date.now() - JIKAN_EPISODE_CACHE_HOURS * 60 * 60 * 1000)
+    const rows = await db
+      .select({ response: metadata_cache.response })
+      .from(metadata_cache)
+      .where(
+        and(
+          eq(metadata_cache.source, 'jikan-episodes'),
+          eq(metadata_cache.lookup_key, key),
+          gt(metadata_cache.cached_at, cutoff),
+        ),
+      )
+      .limit(1)
+    if (Array.isArray(rows[0]?.response)) return rows[0]!.response as JikanEpisode[]
+  }
+
+  const fetched = await getAnimeEpisodes(malId)
+  if (fetched.length > 0) {
+    await db
+      .insert(metadata_cache)
+      .values({ source: 'jikan-episodes', lookup_key: key, response: fetched })
+      .onConflictDoUpdate({
+        target: [metadata_cache.source, metadata_cache.lookup_key],
+        set: { response: fetched, cached_at: sql`now()` },
+      })
+  }
+  return fetched
+}
+
+async function mergeJikanCatalog(
+  malId: number,
+  existing: EpisodeInfo[],
+  force: boolean,
+): Promise<EpisodeInfo[]> {
+  const external = await loadJikanCatalog(malId, force)
+  if (external.length === 0) return existing
+
+  const seasonCounts = new Map<number, number>()
+  for (const ep of existing) {
+    if (ep.season > 0) seasonCounts.set(ep.season, (seasonCounts.get(ep.season) ?? 0) + 1)
+  }
+  const defaultSeason = [...seasonCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 1
+  const byEpisode = new Map<number, EpisodeInfo>()
+  for (const ep of existing) {
+    if (ep.episode > 0 && !byEpisode.has(ep.episode)) byEpisode.set(ep.episode, ep)
+  }
+
+  for (const item of external) {
+    const number = item.mal_id
+    if (!Number.isInteger(number) || number <= 0) continue
+    const current = byEpisode.get(number)
+    const merged: EpisodeInfo = {
+      season: current?.season ?? defaultSeason,
+      episode: number,
+      title: item.title ?? item.title_romanji ?? current?.title ?? null,
+      air_date: item.aired ?? current?.air_date ?? null,
+      torrents: current?.torrents ?? [],
+      markers: current?.markers ?? null,
+      filler: item.filler ?? null,
+      recap: item.recap ?? null,
+      metadata_source: 'jikan',
+    }
+    byEpisode.set(number, merged)
+  }
+
+  const generic = existing.filter((ep) => ep.episode <= 0)
+  return [...byEpisode.values(), ...generic].sort(
+    (a, b) => a.season - b.season || a.episode - b.episode,
+  )
 }
 
 // ─── Strategy B: Heuristic fallback ───────────────────────────────────────

@@ -20,6 +20,21 @@ import { contents, content_torrents, torrents } from '../../types'
 import { resolveEpisodes, type EpisodeInfo } from '../torrent/episodes'
 import { classifySeasonCoverage, type SeasonCoverage } from '../torrent/season-coverage'
 import { extractQuality } from '../../lib/parse'
+import { jwtPlugin } from '../auth/jwt'
+import { resolveAuth } from '../auth/guard'
+import { refreshCatalogContent, type CatalogRefreshResult, type RefreshScope } from './refresh'
+
+// Evita que dois cliques (ou dois dispositivos) disparem o mesmo crawler em
+// paralelo para um título. Todos aguardam a execução já em curso.
+const activeRefreshes = new Map<number, Promise<CatalogRefreshResult>>()
+
+function refreshOnce(id: number, scope: RefreshScope): Promise<CatalogRefreshResult> {
+  const running = activeRefreshes.get(id)
+  if (running) return running
+  const task = refreshCatalogContent(id, scope).finally(() => activeRefreshes.delete(id))
+  activeRefreshes.set(id, task)
+  return task
+}
 
 // Whitelisted sortable columns (prevents arbitrary-column ordering).
 const SORT_COLUMNS = {
@@ -164,6 +179,7 @@ function pagination(query: { page?: number; limit?: number }) {
 }
 
 export const catalogRoutes = new Elysia()
+  .use(jwtPlugin)
   // GET /catalog — filtered, sorted, paginated catalog
   .get(
     '/catalog',
@@ -337,6 +353,45 @@ export const catalogRoutes = new Elysia()
     {
       params: t.Object({ id: t.String() }),
       detail: { summary: 'Get structured episode list for a series', tags: ['catalog'] },
+    },
+  )
+  // POST /catalog/:id/refresh — catálogo externo primeiro, torrents depois.
+  .post(
+    '/catalog/:id/refresh',
+    async ({ params, body, jwt, headers, set }) => {
+      const auth = await resolveAuth(jwt, headers)
+      if (!auth.ok) {
+        set.status = auth.status
+        return { error: auth.error }
+      }
+
+      const id = Number(params.id)
+      if (!Number.isInteger(id)) {
+        set.status = 400
+        return { error: 'Invalid id' }
+      }
+
+      try {
+        return await refreshOnce(id, body.scope ?? 'all')
+      } catch (error) {
+        const message = (error as Error).message
+        set.status = message === 'Content not found' ? 404 : 502
+        return { error: message }
+      }
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({
+        scope: t.Optional(t.Union([
+          t.Literal('all'),
+          t.Literal('metadata'),
+          t.Literal('sources'),
+        ])),
+      }),
+      detail: {
+        summary: 'Refresh one title from external catalogs and torrent sources',
+        tags: ['catalog'],
+      },
     },
   )
   // GET /search — search by title (same envelope as /catalog)

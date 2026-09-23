@@ -2,7 +2,7 @@
 
 **Base URL:** `https://popcorntime.fsops.com.br`  
 **Formato:** JSON  
-**Autenticação:** Nenhuma (API pública)  
+**Autenticação:** leitura pública; operações de atualização exigem Bearer token
 **Docs Swagger:** `/swagger`
 
 ---
@@ -193,7 +193,22 @@
 
 ---
 
-### 4. `GET /search` — Buscar por título
+### 4. `POST /catalog/:id/refresh` — Atualizar um título sob demanda
+
+Exige `Authorization: Bearer <accessToken>`.
+
+Body:
+
+```json
+{ "scope": "all" }
+```
+
+`scope` aceita `all`, `metadata` ou `sources`. Em `all`, a API consulta primeiro
+TMDB/Jikan/OMDb, atualiza o catálogo de temporadas e episódios e só então busca
+e vincula torrents. Filmes consultam múltiplos índices e retornam todas as fontes
+válidas para o seletor; séries/animes informam quantos episódios ainda ficaram sem fonte.
+
+### 5. `GET /search` — Buscar por título
 
 **Query params:** mesmos de `/catalog`, mais:
 
@@ -212,7 +227,7 @@
 
 ---
 
-### 5. `GET /health` — Health check
+### 6. `GET /health` — Health check
 
 **Response (200):** `{ "status": "ok" }`
 

@@ -12,10 +12,19 @@ import { getSeasonNow } from '../enrichment/myanimelist'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-interface FillResult {
+export interface FillResult {
   seriesId: number
   title: string
   torrentsAdded: number
+}
+
+export interface FillGapsOptions {
+  /** Processa somente este conteúdo (usado pela atualização manual da tela de detalhes). */
+  contentId?: number
+  /** Ignora o cache do catálogo externo de temporadas/episódios. */
+  forceCatalog?: boolean
+  /** Limite por conteúdo; o pipeline regular continua conservador em 8 episódios. */
+  maxEpisodesPerContent?: number
 }
 
 interface MatchedTorrent {
@@ -61,7 +70,10 @@ function stripImdbPrefix(imdbId: string): string {
  * @param limit Maximum number of series to process (default 5).
  * @returns Summary array with torrentsAdded counts per series.
  */
-export async function fillGaps(limit = 5): Promise<FillResult[]> {
+export async function fillGaps(
+  limit = 5,
+  options: FillGapsOptions = {},
+): Promise<FillResult[]> {
   const evalLimit = limit * 4
 
   // Priority candidates: currently-airing anime (Jikan season_now) matched by
@@ -69,7 +81,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
   // cares about. Ordering the general window by id DESC never reaches them,
   // because airing anime carry LOW content ids (created before months of junk).
   let priority: Array<{ id: number; title: string; imdb_id: string | null; type: string; mal_id: number | null; coverage: number }> = []
-  try {
+  if (options.contentId == null) try {
     const airingNow = await getSeasonNow()
     const airingMal = Array.from(new Set(airingNow.map((a) => a.mal_id)))
     if (airingMal.length > 0) {
@@ -106,30 +118,37 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
   // enriched anime (Re:Zero #398, Witch Hat #397, Mushoku #1201...) never
   // entered the window and stayed permanently empty. Now the emptiest contents
   // get filled first, and after each run they sink back down.
-  const general = await db
-    .select({
-      id: contents.id,
-      title: contents.title,
-      imdb_id: contents.imdb_id,
-      type: contents.type,
-      mal_id: contents.mal_id,
-      coverage: sql<number>`(select count(*) from content_torrents ct where ct.content_id = ${contents.id})`,
-    })
-    .from(contents)
-    .where(
-      and(
-        inArray(contents.type, ['series', 'anime']),
-        or(
-          and(eq(contents.type, 'series'), isNotNull(contents.tmdb_id), isNotNull(contents.imdb_id)),
-          and(eq(contents.type, 'anime'), isNotNull(contents.mal_id), isNotNull(contents.enriched_at)),
-        ),
-      ),
-    )
-    .orderBy(
-      sql`coalesce(${sql`(select count(*) from content_torrents ct where ct.content_id = ${contents.id})`}, 999999) asc`,
-      desc(contents.id),
-    )
-    .limit(evalLimit)
+  const baseSelection = {
+    id: contents.id,
+    title: contents.title,
+    imdb_id: contents.imdb_id,
+    type: contents.type,
+    mal_id: contents.mal_id,
+    coverage: sql<number>`(select count(*) from content_torrents ct where ct.content_id = ${contents.id})`,
+  }
+  const general = options.contentId != null
+    ? await db
+        .select(baseSelection)
+        .from(contents)
+        .where(eq(contents.id, options.contentId))
+        .limit(1)
+    : await db
+        .select(baseSelection)
+        .from(contents)
+        .where(
+          and(
+            inArray(contents.type, ['series', 'anime']),
+            or(
+              and(eq(contents.type, 'series'), isNotNull(contents.tmdb_id), isNotNull(contents.imdb_id)),
+              and(eq(contents.type, 'anime'), isNotNull(contents.mal_id), isNotNull(contents.enriched_at)),
+            ),
+          ),
+        )
+        .orderBy(
+          sql`coalesce(${sql`(select count(*) from content_torrents ct where ct.content_id = ${contents.id})`}, 999999) asc`,
+          desc(contents.id),
+        )
+        .limit(evalLimit)
 
   // Combine: airing anime first, then the general window (dedup by id).
   const seen = new Set<number>()
@@ -159,7 +178,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
 
     let result: GapResult
     try {
-      result = await detectGaps(contentId)
+      result = await detectGaps(contentId, { force: options.forceCatalog })
     } catch (err) {
       console.warn(
         `[fillGaps] detectGaps failed for "${seriesTitle}" (id=${contentId}):`,
@@ -211,7 +230,7 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
 
     // Cap episodes processed per candidate, per run (see constant above).
     const caps: SeasonGap[] = []
-    let budget = MAX_GAP_EPISODES_PER_RUN
+    let budget = options.maxEpisodesPerContent ?? MAX_GAP_EPISODES_PER_RUN
     for (const g of candidate.gaps) {
       if (budget <= 0) break
       const slice = g.episodes.slice(0, budget)
@@ -339,27 +358,33 @@ export async function fillGaps(limit = 5): Promise<FillResult[]> {
 
           let solidBest: RawTorrent | null = null
           const query = `${seriesTitle} S${seasonStr}E${episodeStr}`
-          try {
-            const solidResults = await searchSolidTorrents(query, 50)
-            solidCache.set(query, solidResults)
-            const solidMatches = solidResults
-              .filter((t) => {
-                if (isPack(t.title)) return false
-                if ((t.seeds ?? 0) < 1) return false
-                const parsed = parseRelease(t.title)
-                if (parsed.season !== gap.season) return false
-                if (parsed.episode !== episodeNum) return false
-                return true
-              })
-              .sort((a, b) => (b.seeds ?? 0) - (a.seeds ?? 0))
-            if (solidMatches.length > 0) {
-              solidBest = solidMatches[0]!
+          // EZTV já retorna todas as qualidades do episódio numa única chamada
+          // por série. Só consulta SolidTorrents quando o episódio realmente
+          // ficou sem resultado; isso mantém a atualização manual dentro do
+          // tempo de uma request mesmo em temporadas grandes.
+          if (eztvMatches.length === 0) {
+            try {
+              const solidResults = await searchSolidTorrents(query, 50)
+              solidCache.set(query, solidResults)
+              const solidMatches = solidResults
+                .filter((t) => {
+                  if (isPack(t.title)) return false
+                  if ((t.seeds ?? 0) < 1) return false
+                  const parsed = parseRelease(t.title)
+                  if (parsed.season !== gap.season) return false
+                  if (parsed.episode !== episodeNum) return false
+                  return true
+                })
+                .sort((a, b) => (b.seeds ?? 0) - (a.seeds ?? 0))
+              if (solidMatches.length > 0) {
+                solidBest = solidMatches[0]!
+              }
+            } catch (err) {
+              console.warn(
+                `[fillGaps] SolidTorrents search failed for "${query}":`,
+                (err as Error).message,
+              )
             }
-          } catch (err) {
-            console.warn(
-              `[fillGaps] SolidTorrents search failed for "${query}":`,
-              (err as Error).message,
-            )
           }
 
           let hasSolid = false

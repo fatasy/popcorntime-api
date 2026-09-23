@@ -113,9 +113,13 @@ function mapJikan(a: mal.JikanAnime): ContentUpdate {
 // Per-source enrichment strategies (cache-aware, rate-limited)
 // ---------------------------------------------------------------------------
 
-async function enrichViaTmdb(query: string, content: Content): Promise<ContentUpdate | null> {
+async function enrichViaTmdb(
+  query: string,
+  content: Content,
+  force = false,
+): Promise<ContentUpdate | null> {
   const searchKey = `multi:${query}:${content.year ?? ''}`
-  let results = await cacheGet('tmdb', searchKey)
+  let results = force ? null : await cacheGet('tmdb', searchKey)
   if (results == null) {
     results = await tmdb.searchMulti(query)
     await Bun.sleep(TMDB_DELAY)
@@ -136,7 +140,7 @@ async function enrichViaTmdb(query: string, content: Content): Promise<ContentUp
   }
 
   const detailKey = `${pick.media_type}:${pick.id}`
-  let details = await cacheGet('tmdb', detailKey)
+  let details = force ? null : await cacheGet('tmdb', detailKey)
   if (details == null) {
     details = pick.media_type === 'tv' ? await tmdb.getTV(pick.id) : await tmdb.getMovie(pick.id)
     await Bun.sleep(TMDB_DELAY)
@@ -145,9 +149,13 @@ async function enrichViaTmdb(query: string, content: Content): Promise<ContentUp
   return mapTmdb(details, pick.media_type)
 }
 
-async function enrichViaOmdb(query: string, content: Content): Promise<ContentUpdate | null> {
+async function enrichViaOmdb(
+  query: string,
+  content: Content,
+  force = false,
+): Promise<ContentUpdate | null> {
   const key = `t:${query}:${content.year ?? ''}`
-  let data = await cacheGet('omdb', key)
+  let data = force ? null : await cacheGet('omdb', key)
   if (data == null) {
     data = await omdb.searchByTitle(query, content.year)
     await cacheSet('omdb', key, data ?? { Response: 'False' })
@@ -156,9 +164,13 @@ async function enrichViaOmdb(query: string, content: Content): Promise<ContentUp
   return mapOmdb(data as omdb.OmdbResult)
 }
 
-async function enrichViaJikan(query: string, _content: Content): Promise<ContentUpdate | null> {
+async function enrichViaJikan(
+  query: string,
+  _content: Content,
+  force = false,
+): Promise<ContentUpdate | null> {
   const key = `search:${query}`
-  let results = await cacheGet('jikan', key)
+  let results = force ? null : await cacheGet('jikan', key)
   if (results == null) {
     results = await mal.searchAnime(query)
     await Bun.sleep(JIKAN_DELAY)
@@ -209,7 +221,10 @@ async function applyUpdate(id: number, update: ContentUpdate): Promise<void> {
  * clean title -> check cache -> TMDB/Jikan -> OMDb fallback -> normalize+retry.
  * Returns true if metadata was found and saved.
  */
-export async function enrichContent(content: Content): Promise<boolean> {
+export async function enrichContent(
+  content: Content,
+  options: { force?: boolean } = {},
+): Promise<boolean> {
   const raw = content.title?.trim()
   if (!raw) return false
 
@@ -219,7 +234,7 @@ export async function enrichContent(content: Content): Promise<boolean> {
 
   try {
     if (content.type === 'anime') {
-      const viaJikan = await enrichViaJikan(cleaned, content)
+      const viaJikan = await enrichViaJikan(cleaned, content, options.force)
       if (viaJikan) {
         await applyUpdate(content.id, viaJikan)
         return true
@@ -228,14 +243,14 @@ export async function enrichContent(content: Content): Promise<boolean> {
     }
 
     // movies & series -> TMDB first
-    const viaTmdb = await enrichViaTmdb(cleaned, content)
+    const viaTmdb = await enrichViaTmdb(cleaned, content, options.force)
     if (viaTmdb) {
       await applyUpdate(content.id, viaTmdb)
       return true
     }
 
     // OMDb fallback
-    const viaOmdb = await enrichViaOmdb(cleaned, content)
+    const viaOmdb = await enrichViaOmdb(cleaned, content, options.force)
     if (viaOmdb) {
       await applyUpdate(content.id, viaOmdb)
       return true
@@ -244,7 +259,7 @@ export async function enrichContent(content: Content): Promise<boolean> {
     // normalize + retry TMDB once with a cleaned-up title
     const norm = normalizeTitle(cleaned)
     if (norm && norm !== cleaned.toLowerCase()) {
-      const retry = await enrichViaTmdb(norm, content)
+      const retry = await enrichViaTmdb(norm, content, options.force)
       if (retry) {
         await applyUpdate(content.id, retry)
         return true

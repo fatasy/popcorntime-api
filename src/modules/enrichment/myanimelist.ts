@@ -18,6 +18,16 @@ export interface JikanAnime {
   studios?: { name: string }[]
 }
 
+export interface JikanEpisode {
+  mal_id: number
+  title?: string | null
+  title_romanji?: string | null
+  title_japanese?: string | null
+  aired?: string | null
+  filler?: boolean | null
+  recap?: boolean | null
+}
+
 /** Search anime by title. */
 export async function searchAnime(query: string, limit = 5): Promise<JikanAnime[]> {
   try {
@@ -97,6 +107,39 @@ export async function getAnimeAiredEpisodeCount(id: number): Promise<number | nu
     console.warn('[jikan] episodes failed:', (err as Error).message)
     return null
   }
+}
+
+/**
+ * Catálogo completo de episódios de um anime. É usado na atualização manual
+ * para que a tela mostre também episódios ainda sem torrent disponível.
+ */
+export async function getAnimeEpisodes(id: number): Promise<JikanEpisode[]> {
+  const episodes: JikanEpisode[] = []
+  let page = 1
+
+  try {
+    while (page <= 100) {
+      const res = await fetch(`${BASE}/anime/${id}/episodes?page=${page}`, {
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!res.ok) {
+        console.warn(`[jikan] episodes page ${page} HTTP ${res.status} for mal:${id}`)
+        break
+      }
+      const json = (await res.json()) as {
+        data?: JikanEpisode[]
+        pagination?: { has_next_page?: boolean }
+      }
+      episodes.push(...(json.data ?? []))
+      if (!json.pagination?.has_next_page) break
+      page++
+      await new Promise((resolve) => setTimeout(resolve, 350))
+    }
+  } catch (err) {
+    console.warn(`[jikan] episode catalog failed for mal:${id}:`, (err as Error).message)
+  }
+
+  return episodes
 }
 
 // ─── Discovery endpoints ─────────────────────────────────────────────

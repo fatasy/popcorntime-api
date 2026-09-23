@@ -12,10 +12,24 @@ export interface JikanAnime {
   status?: string | null
   duration?: string | null
   year?: number | null
-  aired?: { prop?: { from?: { year?: number | null } } }
   images?: { jpg?: { image_url?: string; large_image_url?: string } }
   genres?: { name: string }[]
   studios?: { name: string }[]
+  type?: string | null
+  aired?: {
+    from?: string | null
+    prop?: { from?: { year?: number | null } }
+  }
+}
+
+export interface JikanRelationEntry {
+  mal_id: number
+  type: string
+  name: string
+}
+
+export interface JikanAnimeFull extends JikanAnime {
+  relations?: { relation: string; entry: JikanRelationEntry[] }[]
 }
 
 export interface JikanEpisode {
@@ -62,6 +76,37 @@ export async function getAnime(id: number): Promise<JikanAnime | null> {
     console.warn('[jikan] getAnime failed:', (err as Error).message)
     return null
   }
+}
+
+/** Fetch metadata plus MAL relations (used to join seasons into one title). */
+export async function getAnimeFull(id: number): Promise<JikanAnimeFull | null> {
+  // O endpoint `/full` do Jikan retorna 504 para alguns registros válidos.
+  // Combinar os dois endpoints menores é mais confiável e contém os mesmos
+  // campos necessários para montar a franquia.
+  const anime = await getAnime(id)
+  if (!anime) return null
+  await new Promise((resolve) => setTimeout(resolve, 350))
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(`${BASE}/anime/${id}/relations`, {
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (res.ok) {
+        const data = (await res.json()) as { data?: JikanAnimeFull['relations'] }
+        return { ...anime, relations: data.data ?? [] }
+      }
+      if (res.status !== 429 && res.status < 500) return null
+      console.warn(`[jikan] getAnimeFull mal:${id} HTTP ${res.status} (attempt ${attempt}/3)`)
+    } catch (err) {
+      console.warn(
+        `[jikan] getAnimeFull mal:${id} failed (attempt ${attempt}/3):`,
+        (err as Error).message,
+      )
+    }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 750))
+  }
+  return null
 }
 
 // ─── Aired-episode count (for ongoing anime gap detection) ──────────────────

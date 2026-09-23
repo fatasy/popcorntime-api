@@ -12,6 +12,8 @@ import {
   customType,
   primaryKey,
   uuid,
+  index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core'
 
 const bytea = customType<{ data: Uint8Array }>({
@@ -65,7 +67,36 @@ export const contents = pgTable('contents', {
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow(),
   last_gap_fill_at: timestamp('last_gap_fill_at', { withTimezone: true }),
+  canonical_content_id: integer('canonical_content_id'),
 })
+
+export const anime_franchise_entries = pgTable(
+  'anime_franchise_entries',
+  {
+    content_id: integer('content_id')
+      .notNull()
+      .references(() => contents.id, { onDelete: 'cascade' }),
+    mal_id: integer('mal_id').notNull(),
+    season_number: integer('season_number').notNull(),
+    part_number: integer('part_number').notNull().default(1),
+    episode_offset: integer('episode_offset').notNull().default(0),
+    title: varchar('title', { length: 512 }).notNull(),
+    title_english: varchar('title_english', { length: 512 }),
+    title_japanese: varchar('title_japanese', { length: 512 }),
+    year: integer('year'),
+    episode_count: integer('episode_count'),
+    updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.content_id, table.mal_id] }),
+    uniqueIndex('anime_franchise_entries_mal_id_idx').on(table.mal_id),
+    index('anime_franchise_entries_content_season_idx').on(
+      table.content_id,
+      table.season_number,
+      table.part_number,
+    ),
+  ],
+)
 
 export const content_torrents = pgTable(
   'content_torrents',
@@ -135,6 +166,7 @@ export type Content = typeof contents.$inferSelect
 export type NewContent = typeof contents.$inferInsert
 export type ContentTorrent = typeof content_torrents.$inferSelect
 export type NewContentTorrent = typeof content_torrents.$inferInsert
+export type AnimeFranchiseEntry = typeof anime_franchise_entries.$inferSelect
 
 // ─── Auth: contas, perfis, refresh tokens (criadas por migrations/003_auth.sql) ───
 

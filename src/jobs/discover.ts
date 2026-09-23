@@ -1,5 +1,5 @@
 import { db } from '../db'
-import { contents } from '../types'
+import { anime_franchise_entries, contents } from '../types'
 import { eq, and, or, isNull } from 'drizzle-orm'
 import { collectTorrentsByQuery, type Category } from '../modules/collection'
 import {
@@ -15,6 +15,7 @@ import {
 } from '../modules/enrichment/tmdb'
 import { getSeasonNow, getTopAiring } from '../modules/enrichment/myanimelist'
 import type { JikanAnime } from '../modules/enrichment/myanimelist'
+import { consolidateAnimeFranchise } from '../modules/anime/franchise'
 
 // ─── helpers ────────────────────────────────────────────────────────
 
@@ -53,6 +54,12 @@ async function contentExists(
   }
   if (malId != null) {
     conditions.push(and(eq(contents.mal_id, malId), eq(contents.type, type)))
+    const franchiseRows = await db
+      .select({ contentId: anime_franchise_entries.content_id })
+      .from(anime_franchise_entries)
+      .where(eq(anime_franchise_entries.mal_id, malId))
+      .limit(1)
+    if (franchiseRows.length > 0) return true
   }
 
   if (conditions.length) {
@@ -323,6 +330,17 @@ async function processDiscoveredItems(
         if (n > 0) console.log(`[discover]   torrents: +${n}`)
       } catch (err) {
         console.warn(`[discover] torrent collect failed for "${item.title}":`, (err as Error).message)
+      }
+
+      if (item.type === 'anime' && item.mal_id) {
+        try {
+          await consolidateAnimeFranchise(id)
+        } catch (err) {
+          console.warn(
+            `[discover] anime franchise consolidation failed for "${item.title}":`,
+            (err as Error).message,
+          )
+        }
       }
 
       // Rate-limit between items

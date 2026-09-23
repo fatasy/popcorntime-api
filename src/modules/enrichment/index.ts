@@ -5,6 +5,7 @@ import { normalizeTitle, parseRelease } from '../../lib/parse'
 import * as tmdb from './tmdb'
 import * as omdb from './omdb'
 import * as mal from './myanimelist'
+import { consolidateAnimeFranchise } from '../anime/franchise'
 
 const TMDB_DELAY = 200 // ms between TMDB requests
 const JIKAN_DELAY = 350 // ms between Jikan requests
@@ -237,6 +238,19 @@ export async function enrichContent(
       const viaJikan = await enrichViaJikan(cleaned, content, options.force)
       if (viaJikan) {
         await applyUpdate(content.id, viaJikan)
+        // Conteúdos criados a partir do nome de um torrent ainda não tinham
+        // MAL id. Assim que o enriquecimento descobre esse id, incorpora a
+        // temporada à obra canônica em vez de criar outro card no catálogo.
+        if (content.mal_id == null && viaJikan.mal_id != null) {
+          try {
+            await consolidateAnimeFranchise(content.id)
+          } catch (err) {
+            console.warn(
+              `[enrich] anime franchise consolidation failed for content ${content.id}:`,
+              (err as Error).message,
+            )
+          }
+        }
         return true
       }
       return false

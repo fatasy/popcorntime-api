@@ -6,6 +6,7 @@ import { detectGaps } from '../collection/gap-detector'
 import { refreshMovieSources } from '../collection/refresh-movie-sources'
 import { enrichContent } from '../enrichment'
 import { resolveEpisodes } from '../torrent/episodes'
+import { consolidateAnimeFranchise, resolveCanonicalContentId } from '../anime/franchise'
 
 export type RefreshScope = 'all' | 'metadata' | 'sources'
 
@@ -25,15 +26,25 @@ export async function refreshCatalogContent(
   contentId: number,
   scope: RefreshScope = 'all',
 ): Promise<CatalogRefreshResult> {
-  const [before] = await db.select().from(contents).where(eq(contents.id, contentId)).limit(1)
+  let canonicalId = await resolveCanonicalContentId(contentId)
+  let [before] = await db.select().from(contents).where(eq(contents.id, canonicalId)).limit(1)
   if (!before) throw new Error('Content not found')
+
+  // MAL publica temporadas/cours como animes diferentes. No nosso catálogo a
+  // obra é única: descobre a cadeia e consolida tudo antes de buscar fontes.
+  if (before.type === 'anime' && before.mal_id) {
+    const consolidated = await consolidateAnimeFranchise(canonicalId)
+    canonicalId = consolidated.contentId
+    ;[before] = await db.select().from(contents).where(eq(contents.id, canonicalId)).limit(1)
+    if (!before) throw new Error('Content not found after anime consolidation')
+  }
 
   let metadataUpdated = false
   if (scope !== 'sources') {
     metadataUpdated = await enrichContent(before, { force: true })
   }
 
-  const [content] = await db.select().from(contents).where(eq(contents.id, contentId)).limit(1)
+  const [content] = await db.select().from(contents).where(eq(contents.id, canonicalId)).limit(1)
   if (!content) throw new Error('Content not found after enrichment')
 
   let sourcesFound = 0
@@ -42,7 +53,7 @@ export async function refreshCatalogContent(
   let remainingEpisodes = 0
 
   if (scope !== 'metadata' && content.type === 'movie') {
-    const movie = await refreshMovieSources(contentId)
+    const movie = await refreshMovieSources(canonicalId)
     sourcesFound = movie.sourcesFound
     sourcesAdded = movie.sourcesAdded
   }
@@ -50,7 +61,7 @@ export async function refreshCatalogContent(
   if (content.type === 'series' || content.type === 'anime') {
     if (scope !== 'metadata') {
       const filled = await fillGaps(1, {
-        contentId,
+        contentId: canonicalId,
         forceCatalog: true,
         // Um clique cobre temporadas usuais inteiras, mas mantém a request
         // limitada para séries muito longas. A resposta informa o restante.
@@ -59,12 +70,12 @@ export async function refreshCatalogContent(
       sourcesAdded = filled[0]?.torrentsAdded ?? 0
     }
 
-    const episodes = await resolveEpisodes(contentId, { forceExternal: scope !== 'sources' })
+    const episodes = await resolveEpisodes(canonicalId, { forceExternal: scope !== 'sources' })
     episodesCataloged = episodes.filter((episode) => episode.episode > 0).length
     sourcesFound = episodes.reduce((total, episode) => total + episode.torrents.length, 0)
 
     try {
-      const gaps = await detectGaps(contentId)
+      const gaps = await detectGaps(canonicalId)
       remainingEpisodes = gaps.gaps.reduce((total, gap) => total + gap.episodes.length, 0)
     } catch {
       remainingEpisodes = 0
@@ -73,11 +84,11 @@ export async function refreshCatalogContent(
     await db
       .update(contents)
       .set({ last_gap_fill_at: new Date(), updated_at: new Date() })
-      .where(eq(contents.id, contentId))
+      .where(eq(contents.id, canonicalId))
   }
 
   return {
-    contentId,
+    contentId: canonicalId,
     type: content.type,
     metadataUpdated,
     sourcesFound,

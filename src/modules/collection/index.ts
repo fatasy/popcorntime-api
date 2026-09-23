@@ -1,4 +1,4 @@
-import { inArray, sql, eq, desc } from 'drizzle-orm'
+import { inArray, sql, eq, desc, and, isNull } from 'drizzle-orm'
 import { db } from '../../db'
 import { torrents, contents } from '../../types'
 import type { RawTorrent } from '../../lib/parse'
@@ -132,7 +132,7 @@ async function collectAnimeFromNyaa(): Promise<RawTorrent[]> {
   const animeRows = await db
     .select({ title: contents.title })
     .from(contents)
-    .where(eq(contents.type, 'anime'))
+    .where(and(eq(contents.type, 'anime'), isNull(contents.canonical_content_id)))
     .orderBy(desc(contents.id))
     .limit(10)
 

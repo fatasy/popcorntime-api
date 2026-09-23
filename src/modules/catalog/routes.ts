@@ -10,19 +10,21 @@ import {
   ilike,
   inArray,
   isNotNull,
+  isNull,
   lt,
   or,
   sql,
   type SQL,
 } from 'drizzle-orm'
 import { db } from '../../db'
-import { contents, content_torrents, torrents } from '../../types'
+import { anime_franchise_entries, contents, content_torrents, torrents } from '../../types'
 import { resolveEpisodes, type EpisodeInfo } from '../torrent/episodes'
 import { classifySeasonCoverage, type SeasonCoverage } from '../torrent/season-coverage'
 import { extractQuality } from '../../lib/parse'
 import { jwtPlugin } from '../auth/jwt'
 import { resolveAuth } from '../auth/guard'
 import { refreshCatalogContent, type CatalogRefreshResult, type RefreshScope } from './refresh'
+import { resolveCanonicalContentId } from '../anime/franchise'
 
 // Evita que dois cliques (ou dois dispositivos) disparem o mesmo crawler em
 // paralelo para um título. Todos aguardam a execução já em curso.
@@ -96,7 +98,9 @@ function genreFilter(genre: string): SQL {
 }
 
 function buildFilters(input: FilterInput): SQL[] {
-  const conds: SQL[] = []
+  // Aliases preservam URLs/favoritos antigos, mas nunca aparecem como outro
+  // card no catálogo.
+  const conds: SQL[] = [isNull(contents.canonical_content_id)]
   if (input.type) conds.push(eq(contents.type, input.type))
   if (input.year != null) conds.push(eq(contents.year, input.year))
   if (input.genre) conds.push(genreFilter(input.genre))
@@ -221,11 +225,12 @@ export const catalogRoutes = new Elysia()
   .get(
     '/catalog/:id',
     async ({ params, set }) => {
-      const id = Number(params.id)
-      if (!Number.isInteger(id)) {
+      const requestedId = Number(params.id)
+      if (!Number.isInteger(requestedId)) {
         set.status = 400
         return { error: 'Invalid id' }
       }
+      const id = await resolveCanonicalContentId(requestedId)
       const rows = await db.select().from(contents).where(eq(contents.id, id)).limit(1)
       const content = rows[0]
       if (!content) {
@@ -249,6 +254,16 @@ export const catalogRoutes = new Elysia()
 
       // For series and anime, group torrents by season using coverage classification
       if (content.type === 'series' || content.type === 'anime') {
+        const franchise = content.type === 'anime'
+          ? await db
+              .select()
+              .from(anime_franchise_entries)
+              .where(eq(anime_franchise_entries.content_id, id))
+              .orderBy(
+                asc(anime_franchise_entries.season_number),
+                asc(anime_franchise_entries.part_number),
+              )
+          : []
         // Classify each torrent's season coverage
         const coverageMap = new Map<number, SeasonCoverage>()
         for (const t of linked) {
@@ -292,7 +307,15 @@ export const catalogRoutes = new Elysia()
         if (unknownSeason.length > 0) {
           seasons.push({ season: 0, torrent_count: unknownSeason.length, torrents: unknownSeason })
         }
-        return { ...content, seasons, season_count: bySeason.size }
+        const franchiseSeasonCount = franchise.length > 0
+          ? Math.max(...franchise.map((entry) => entry.season_number))
+          : 0
+        return {
+          ...content,
+          seasons,
+          season_count: Math.max(bySeason.size, franchiseSeasonCount),
+          catalog_seasons: franchise,
+        }
       }
 
       return { ...content, torrents: linkedWithQuality }
@@ -306,13 +329,14 @@ export const catalogRoutes = new Elysia()
   .get(
     '/catalog/:id/episodes',
     async ({ params, set }) => {
-      const id = Number(params.id)
-      if (!Number.isInteger(id)) {
+      const requestedId = Number(params.id)
+      if (!Number.isInteger(requestedId)) {
         set.status = 400
         return { error: 'Invalid id' }
       }
 
       // Load content to verify it's a series
+      const id = await resolveCanonicalContentId(requestedId)
       const rows = await db.select().from(contents).where(eq(contents.id, id)).limit(1)
       const content = rows[0]
       if (!content) {

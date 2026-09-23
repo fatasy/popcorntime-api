@@ -1,6 +1,6 @@
 import { and, eq, gt } from 'drizzle-orm'
 import { db } from '../../db'
-import { contents, content_torrents, metadata_cache } from '../../types'
+import { anime_franchise_entries, contents, content_torrents, metadata_cache } from '../../types'
 import { getAnime, getAnimeAiredEpisodeCount } from '../enrichment/myanimelist'
 
 const BASE = 'https://api.themoviedb.org/3'
@@ -13,6 +13,11 @@ const CACHE_TTL_HOURS = 24
 export interface SeasonGap {
   season: number
   episodes: number[] // episode numbers that are missing
+  /** Título específico da temporada/parte usado na busca de torrents de anime. */
+  searchTitle?: string
+  /** Offset do cour dentro da temporada (ex.: parte 2 começa no episódio 13). */
+  episodeOffset?: number
+  malId?: number
 }
 
 export interface GapResult {
@@ -189,6 +194,56 @@ async function detectAnimeGaps(content: {
   mal_id: number | null
   title: string | null
 }, force = false): Promise<GapResult> {
+  const franchise = await db
+    .select()
+    .from(anime_franchise_entries)
+    .where(eq(anime_franchise_entries.content_id, content.id))
+
+  if (franchise.length > 0) {
+    const existingRows = await db
+      .select({ season: content_torrents.season, episode: content_torrents.episode })
+      .from(content_torrents)
+      .where(eq(content_torrents.content_id, content.id))
+    const existing = new Set(
+      existingRows
+        .filter((row) => row.season != null && row.episode != null)
+        .map((row) => `${row.season}|${row.episode}`),
+    )
+    const gaps: SeasonGap[] = []
+    let isAiring = false
+
+    for (const entry of franchise.sort(
+      (a, b) => a.season_number - b.season_number || a.part_number - b.part_number,
+    )) {
+      const anime = await getAnime(entry.mal_id)
+      await new Promise((resolve) => setTimeout(resolve, JIKAN_DELAY_MS))
+      const latestAired = await getAnimeAiredEpisodeCount(entry.mal_id)
+      const episodeCount = anime?.episodes ?? latestAired ?? entry.episode_count ?? 0
+      if (anime?.status === 'Currently Airing') isAiring = true
+      const missing: number[] = []
+      for (let localEpisode = 1; localEpisode <= episodeCount; localEpisode++) {
+        const episode = entry.episode_offset + localEpisode
+        if (!existing.has(`${entry.season_number}|${episode}`)) {
+          missing.push(episode)
+        }
+      }
+      if (missing.length > 0) {
+        gaps.push({
+          season: entry.season_number,
+          episodes: missing,
+          searchTitle: entry.title_english ?? entry.title,
+          episodeOffset: entry.episode_offset,
+          malId: entry.mal_id,
+        })
+      }
+    }
+
+    return {
+      gaps,
+      isAiring,
+    }
+  }
+
   const malId = content.mal_id
   // content.id should be non-null here; mal_id guarded by the caller
   const key = `anime:${malId}`

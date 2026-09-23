@@ -1,6 +1,6 @@
 import { and, eq, gt, sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { contents, content_torrents, torrents, torrent_episodes, metadata_cache } from '../../types'
+import { anime_franchise_entries, contents, content_torrents, torrents, torrent_episodes, metadata_cache } from '../../types'
 import { getTV, getSeasonEpisodes } from '../enrichment/tmdb'
 import { getAnimeEpisodes, type JikanEpisode } from '../enrichment/myanimelist'
 import * as aniskip from '../enrichment/aniskip'
@@ -145,14 +145,31 @@ export async function resolveEpisodes(
   // episódios sem fonte. Jikan fornece a lista; os torrents já resolvidos são
   // mesclados pelo número do episódio.
   if (!content.tmdb_id && content.mal_id) {
-    episodes = await mergeJikanCatalog(content.mal_id, episodes, !!options.forceExternal)
+    episodes = await mergeJikanCatalog(contentId, content.mal_id, episodes, !!options.forceExternal)
   }
 
   // 4. Best-effort: anexa marcadores de abertura/créditos via AniSkip (anime com
   //    mal_id). Cacheado em metadata_cache; o runtime do TMDB já foi anexado em
   //    resolveWithTmdb. Nunca lança — marcadores são um "nice to have".
   if (content.mal_id) {
-    await attachAniskipMarkers(content.mal_id, episodes)
+    const franchise = await db
+      .select()
+      .from(anime_franchise_entries)
+      .where(eq(anime_franchise_entries.content_id, contentId))
+    if (franchise.length > 0) {
+      for (const entry of franchise) {
+        const seasonEpisodes = episodes.filter(
+          (episode) =>
+            episode.season === entry.season_number &&
+            episode.episode > entry.episode_offset &&
+            (entry.episode_count == null ||
+              episode.episode <= entry.episode_offset + entry.episode_count),
+        )
+        await attachAniskipMarkers(entry.mal_id, seasonEpisodes, entry.episode_offset)
+      }
+    } else {
+      await attachAniskipMarkers(content.mal_id, episodes)
+    }
   }
 
   return episodes
@@ -392,39 +409,56 @@ async function loadJikanCatalog(malId: number, force: boolean): Promise<JikanEpi
 }
 
 async function mergeJikanCatalog(
+  contentId: number,
   malId: number,
   existing: EpisodeInfo[],
   force: boolean,
 ): Promise<EpisodeInfo[]> {
-  const external = await loadJikanCatalog(malId, force)
-  if (external.length === 0) return existing
-
-  const seasonCounts = new Map<number, number>()
-  for (const ep of existing) {
-    if (ep.season > 0) seasonCounts.set(ep.season, (seasonCounts.get(ep.season) ?? 0) + 1)
+  let franchise = await db
+    .select()
+    .from(anime_franchise_entries)
+    .where(eq(anime_franchise_entries.content_id, contentId))
+  if (franchise.length === 0) {
+    franchise = [{
+      content_id: contentId,
+      mal_id: malId,
+      season_number: 1,
+      part_number: 1,
+      episode_offset: 0,
+      title: '',
+      title_english: null,
+      title_japanese: null,
+      year: null,
+      episode_count: null,
+      updated_at: new Date(),
+    }]
   }
-  const defaultSeason = [...seasonCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 1
-  const byEpisode = new Map<number, EpisodeInfo>()
+
+  const byEpisode = new Map<string, EpisodeInfo>()
   for (const ep of existing) {
-    if (ep.episode > 0 && !byEpisode.has(ep.episode)) byEpisode.set(ep.episode, ep)
+    if (ep.episode > 0) byEpisode.set(`${ep.season}|${ep.episode}`, ep)
   }
 
-  for (const item of external) {
-    const number = item.mal_id
-    if (!Number.isInteger(number) || number <= 0) continue
-    const current = byEpisode.get(number)
-    const merged: EpisodeInfo = {
-      season: current?.season ?? defaultSeason,
-      episode: number,
-      title: item.title ?? item.title_romanji ?? current?.title ?? null,
-      air_date: item.aired ?? current?.air_date ?? null,
-      torrents: current?.torrents ?? [],
-      markers: current?.markers ?? null,
-      filler: item.filler ?? null,
-      recap: item.recap ?? null,
-      metadata_source: 'jikan',
+  for (const entry of franchise) {
+    const external = await loadJikanCatalog(entry.mal_id, force)
+    for (const item of external) {
+      const localNumber = item.mal_id
+      if (!Number.isInteger(localNumber) || localNumber <= 0) continue
+      const number = entry.episode_offset + localNumber
+      const key = `${entry.season_number}|${number}`
+      const current = byEpisode.get(key)
+      byEpisode.set(key, {
+        season: entry.season_number,
+        episode: number,
+        title: item.title ?? item.title_romanji ?? current?.title ?? null,
+        air_date: item.aired ?? current?.air_date ?? null,
+        torrents: current?.torrents ?? [],
+        markers: current?.markers ?? null,
+        filler: item.filler ?? null,
+        recap: item.recap ?? null,
+        metadata_source: 'jikan',
+      })
     }
-    byEpisode.set(number, merged)
   }
 
   const generic = existing.filter((ep) => ep.episode <= 0)
@@ -441,8 +475,11 @@ function resolveHeuristic(linked: LinkedTorrent[]): EpisodeInfo[] {
   for (const t of linked) {
     // Try to parse season/episode from the torrent title
     const parsed = parseRelease(t.title)
-    const season = parsed.season ?? 0
-    const episode = parsed.episode ?? 0
+    // O vínculo já contém a temporada lógica definida pela franquia. Ela tem
+    // precedência porque releases `Title - 01` não carregam Sxx e antes eram
+    // exibidos incorretamente como "temporada 0".
+    const season = t.season ?? parsed.season ?? 0
+    const episode = t.episode ?? parsed.episode ?? 0
 
     const key = `${season}|${episode}`
     if (!episodeMap.has(key)) episodeMap.set(key, [])
@@ -513,11 +550,15 @@ async function cachedAniskip(
  * temporada). Para séries multi-temporada sob um único mal_id o casamento é
  * aproximado — por isso é só um marcador, com fallback no app.
  */
-async function attachAniskipMarkers(malId: number, episodes: EpisodeInfo[]): Promise<void> {
+async function attachAniskipMarkers(
+  malId: number,
+  episodes: EpisodeInfo[],
+  episodeOffset = 0,
+): Promise<void> {
   for (const ep of episodes) {
     if (ep.season === 0 || ep.episode === 0) continue
     try {
-      const sk = await cachedAniskip(malId, ep.episode)
+      const sk = await cachedAniskip(malId, ep.episode - episodeOffset)
       if (!sk) continue
       const m: EpisodeMarkers = ep.markers ?? { source: 'aniskip' }
       if (sk.introStart != null && sk.introEnd != null) {

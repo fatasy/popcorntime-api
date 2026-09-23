@@ -324,12 +324,18 @@ export async function consolidateAnimeFranchise(contentId: number): Promise<{
       a.season - b.season || a.part - b.part || (a.airedFrom ?? '').localeCompare(b.airedFrom ?? ''),
     )[0]!
     const canonicalTitle = baseAnimeTitle(root.titleEnglish ?? root.title) || root.title
+    const latestReleaseDate = entries
+      .map((entry) => entry.airedFrom?.slice(0, 10) ?? null)
+      .filter((value): value is string => value != null)
+      .sort()
+      .at(-1) ?? null
     await tx
       .update(contents)
       .set({
         title: canonicalTitle.slice(0, 512),
         original_title: (root.titleJapanese ?? root.title).slice(0, 512),
         year: root.year,
+        release_date: latestReleaseDate,
         mal_id: root.malId,
         season: Math.max(...entries.map((entry) => entry.season)),
         canonical_content_id: null,

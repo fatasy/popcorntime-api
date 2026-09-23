@@ -12,6 +12,32 @@ const JIKAN_DELAY = 350 // ms between Jikan requests
 
 type ContentUpdate = Partial<NewContent>
 
+function dateOnly(value?: string | null): string | null {
+  const match = value?.match(/^(\d{4}-\d{2}-\d{2})/)
+  return match?.[1] ?? null
+}
+
+function tmdbReleaseDate(details: any, mediaType: string): string | null {
+  if (mediaType === 'movie') return dateOnly(details.release_date)
+  const seasonDates = (Array.isArray(details.seasons) ? details.seasons : [])
+    .filter((season: any) => Number(season?.season_number) > 0)
+    .map((season: any) => dateOnly(season?.air_date))
+    .filter((value: string | null): value is string => value != null)
+    .sort()
+  return seasonDates.at(-1) ?? dateOnly(details.first_air_date)
+}
+
+function omdbDate(value?: string | null): string | null {
+  const match = value?.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/)
+  if (!match) return null
+  const months: Record<string, string> = {
+    Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06',
+    Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12',
+  }
+  const month = months[match[2]!]
+  return month ? `${match[3]}-${month}-${match[1]!.padStart(2, '0')}` : null
+}
+
 // ---------------------------------------------------------------------------
 // metadata_cache helpers (composite pk: source + lookup_key)
 // ---------------------------------------------------------------------------
@@ -43,8 +69,8 @@ async function cacheSet(source: string, key: string, response: any): Promise<voi
 
 function mapTmdb(d: any, mediaType: string): ContentUpdate {
   const title: string | undefined = d.title ?? d.name
-  const date: string = d.release_date ?? d.first_air_date ?? ''
-  const year = date ? parseInt(date.slice(0, 4), 10) || null : null
+  const originalReleaseDate: string = d.release_date ?? d.first_air_date ?? ''
+  const year = originalReleaseDate ? parseInt(originalReleaseDate.slice(0, 4), 10) || null : null
   const genres = (d.genres ?? []).map((g: any) => g.name).filter(Boolean)
   const cast = (d.credits?.cast ?? []).slice(0, 10).map((c: any) => c.name).filter(Boolean)
   const director = (d.credits?.crew ?? []).find((c: any) => c.job === 'Director')?.name ?? null
@@ -60,6 +86,7 @@ function mapTmdb(d: any, mediaType: string): ContentUpdate {
     title: title ? title.slice(0, 512) : undefined,
     original_title: (d.original_title ?? d.original_name)?.slice(0, 512) ?? null,
     year,
+    release_date: tmdbReleaseDate(d, mediaType),
     synopsis: d.overview || null,
     genres: genres.length ? genres : null,
     rating: d.vote_average != null ? String(d.vote_average) : null,
@@ -81,6 +108,7 @@ function mapOmdb(d: omdb.OmdbResult): ContentUpdate {
   return {
     title: ok(d.Title)?.slice(0, 512),
     year,
+    release_date: omdbDate(ok(d.Released)),
     synopsis: ok(d.Plot),
     genres: ok(d.Genre) ? d.Genre!.split(',').map((s) => s.trim()) : null,
     rating: ok(d.imdbRating),
@@ -101,6 +129,7 @@ function mapJikan(a: mal.JikanAnime): ContentUpdate {
     title: (a.title_english ?? a.title)?.slice(0, 512),
     original_title: (a.title_japanese ?? a.title)?.slice(0, 512) ?? null,
     year: year ?? null,
+    release_date: dateOnly(a.aired?.from),
     synopsis: a.synopsis ?? null,
     genres: a.genres?.length ? a.genres.map((g) => g.name) : null,
     rating: a.score != null ? String(a.score) : null,

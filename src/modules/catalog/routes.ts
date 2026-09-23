@@ -99,6 +99,7 @@ function refreshEpisodeSourcesOnce(
 const SORT_COLUMNS = {
   created_at: contents.created_at,
   updated_at: contents.updated_at,
+  release_date: contents.release_date,
   year: contents.year,
   rating: contents.rating,
   title: contents.title,
@@ -111,11 +112,12 @@ interface FilterInput {
   year?: number
   search?: string
   enriched?: boolean
-  // ISO date strings: filter by when the content was added to the catalog
-  // (contents.created_at). Powers the app's "Novidades do mês" row — there is
-  // no finer-grained release date stored, so "added this month" is the proxy.
+  // ISO timestamps: filter by when the content was added to the catalog.
   created_after?: string
   created_before?: string
+  // Calendar dates: filter by the real premiere/release date.
+  released_after?: string
+  released_before?: string
 }
 
 /** Parses an ISO date string; returns null if absent or invalid (so a bad query param is ignored, not fatal). */
@@ -123,6 +125,14 @@ function parseDate(s?: string): Date | null {
   if (!s) return null
   const d = new Date(s)
   return Number.isNaN(d.getTime()) ? null : d
+}
+
+function parseDateOnly(value?: string): string | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+  const date = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+    ? value
+    : null
 }
 
 // Os gêneros são gravados em IDIOMAS diferentes por fonte: TMDB (filmes/séries) em
@@ -167,6 +177,10 @@ function buildFilters(input: FilterInput): SQL[] {
   if (after) conds.push(gte(contents.created_at, after))
   const before = parseDate(input.created_before)
   if (before) conds.push(lt(contents.created_at, before))
+  const releasedAfter = parseDateOnly(input.released_after)
+  if (releasedAfter) conds.push(gte(contents.release_date, releasedAfter))
+  const releasedBefore = parseDateOnly(input.released_before)
+  if (releasedBefore) conds.push(lt(contents.release_date, releasedBefore))
   return conds
 }
 
@@ -254,6 +268,8 @@ export const catalogRoutes = new Elysia()
         enriched: query.enriched === 'true' || query.enriched === '1',
         created_after: query.created_after,
         created_before: query.created_before,
+        released_after: query.released_after,
+        released_before: query.released_before,
       })
       const isValidSort = query.sort === 'popular' || (query.sort != null && query.sort in SORT_COLUMNS)
       const sort = isValidSort ? (query.sort as SortKey | 'popular') : 'created_at'
@@ -272,6 +288,8 @@ export const catalogRoutes = new Elysia()
         enriched: t.Optional(t.String()),
         created_after: t.Optional(t.String()),
         created_before: t.Optional(t.String()),
+        released_after: t.Optional(t.String()),
+        released_before: t.Optional(t.String()),
         page: t.Optional(t.Numeric()),
         limit: t.Optional(t.Numeric()),
       }),

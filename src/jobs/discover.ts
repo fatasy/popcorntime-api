@@ -101,6 +101,7 @@ async function insertContent(
   malId: number | null,
   posterUrl: string | null,
   seasonCount: number | null,
+  releaseDate: string | null,
 ): Promise<number | null> {
   try {
     const [row] = await db
@@ -109,6 +110,7 @@ async function insertContent(
         type,
         title: title.slice(0, 512),
         year,
+        release_date: releaseDate,
         tmdb_id: tmdbId,
         mal_id: malId,
         poster_url: posterUrl,
@@ -136,7 +138,7 @@ async function getSeasonCount(tmdbId: number): Promise<number | null> {
 // ─── discover movies ────────────────────────────────────────────────
 
 async function discoverMovies(): Promise<
-  { title: string; year: number; tmdb_id: number; poster_url: string | null }[]
+  { title: string; year: number; release_date: string | null; tmdb_id: number; poster_url: string | null }[]
 > {
   console.log('[discover] Fetching movies from TMDB...')
 
@@ -147,7 +149,13 @@ async function discoverMovies(): Promise<
   ])
 
   const seen = new Set<number>()
-  const items: { title: string; year: number; tmdb_id: number; poster_url: string | null }[] = []
+  const items: {
+    title: string
+    year: number
+    release_date: string | null
+    tmdb_id: number
+    poster_url: string | null
+  }[] = []
 
   for (const m of [...nowPlaying, ...popular, ...trending]) {
     if (seen.has(m.id)) continue
@@ -163,6 +171,7 @@ async function discoverMovies(): Promise<
     items.push({
       title,
       year: year ?? new Date().getFullYear(),
+      release_date: dateStr || null,
       tmdb_id: m.id,
       poster_url: tmdbImage(m.poster_path),
     })
@@ -175,7 +184,7 @@ async function discoverMovies(): Promise<
 // ─── discover series ────────────────────────────────────────────────
 
 async function discoverSeries(): Promise<
-  { title: string; year: number; tmdb_id: number; poster_url: string | null; season_count: number | null }[]
+  { title: string; year: number; release_date: string | null; tmdb_id: number; poster_url: string | null; season_count: number | null }[]
 > {
   console.log('[discover] Fetching TV series from TMDB...')
 
@@ -189,6 +198,7 @@ async function discoverSeries(): Promise<
   const items: {
     title: string
     year: number
+    release_date: string | null
     tmdb_id: number
     poster_url: string | null
     season_count: number | null
@@ -208,6 +218,7 @@ async function discoverSeries(): Promise<
     items.push({
       title,
       year: year ?? new Date().getFullYear(),
+      release_date: dateStr || null,
       tmdb_id: s.id,
       poster_url: tmdbImage(s.poster_path),
       season_count: null, // filled per-item in processItems
@@ -221,7 +232,7 @@ async function discoverSeries(): Promise<
 // ─── discover anime ─────────────────────────────────────────────────
 
 async function discoverAnimeItems(): Promise<
-  { title: string; year: number; mal_id: number; poster_url: string | null; tmdb_id: number | null }[]
+  { title: string; year: number; release_date: string | null; mal_id: number; poster_url: string | null; tmdb_id: number | null }[]
 > {
   console.log('[discover] Fetching anime from Jikan + TMDB...')
 
@@ -235,6 +246,7 @@ async function discoverAnimeItems(): Promise<
   const items: {
     title: string
     year: number
+    release_date: string | null
     mal_id: number
     poster_url: string | null
     tmdb_id: number | null
@@ -253,6 +265,7 @@ async function discoverAnimeItems(): Promise<
     items.push({
       title,
       year,
+      release_date: a.aired?.from?.slice(0, 10) ?? null,
       mal_id: a.mal_id,
       poster_url: a.images?.jpg?.large_image_url ?? a.images?.jpg?.image_url ?? null,
       tmdb_id: null,
@@ -273,6 +286,7 @@ async function discoverAnimeItems(): Promise<
     items.push({
       title,
       year,
+      release_date: a.first_air_date || null,
       mal_id: 0, // placeholder — TMDB doesn't give mal_id
       poster_url: tmdbImage(a.poster_path),
       tmdb_id: aid,
@@ -289,6 +303,7 @@ async function processDiscoveredItems(
   items: {
     title: string
     year: number
+    release_date: string | null
     type: string
     tmdb_id: number | null
     mal_id: number | null
@@ -317,6 +332,7 @@ async function processDiscoveredItems(
       item.mal_id,
       item.poster_url,
       seasonCount,
+      item.release_date,
     )
 
     if (id) {

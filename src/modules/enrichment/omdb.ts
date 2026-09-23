@@ -6,6 +6,7 @@ export interface OmdbResult {
   Response: 'True' | 'False'
   Title?: string
   Year?: string
+  Released?: string
   Genre?: string
   Plot?: string
   imdbRating?: string

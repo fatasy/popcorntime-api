@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'path'
 import { fetchVttByToken } from './aggregator'
 
 const API_URL = 'https://opencode.ai/zen/go/v1/chat/completions'
-const MODEL = process.env.OPENCODE_GO_SUBTITLE_MODEL || 'deepseek-v4-pro'
+const MODEL = process.env.OPENCODE_GO_SUBTITLE_MODEL || 'deepseek-v4-flash'
 const LOCAL_ROOT = join(import.meta.dir, '..', '..', '..', 'local-subtitles')
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024
 const MAX_ACTIVE_JOBS = 2
@@ -216,6 +216,7 @@ async function translateChunk(
           ],
           max_tokens: 8000,
           temperature: 0.1,
+          response_format: { type: 'json_object' },
         }),
       })
       if (!response.ok) {

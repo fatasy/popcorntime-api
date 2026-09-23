@@ -539,7 +539,9 @@ function resolveHeuristic(linked: LinkedTorrent[]): EpisodeInfo[] {
     // precedência porque releases `Title - 01` não carregam Sxx e antes eram
     // exibidos incorretamente como "temporada 0".
     const season = t.season ?? parsed.season ?? 0
-    const episode = t.episode ?? parsed.episode ?? 0
+    // `episode = null` com temporada conhecida representa pack; não deixe o
+    // parser transformar o início de um range (`01 ~ 12`) em episódio único.
+    const episode = t.season != null ? (t.episode ?? 0) : (parsed.episode ?? 0)
 
     const key = `${season}|${episode}`
     if (!episodeMap.has(key)) episodeMap.set(key, [])

@@ -42,7 +42,98 @@ export interface JikanEpisode {
   recap?: boolean | null
 }
 
-/** Search anime by title. */
+function anilistDate(date?: { year?: number | null; month?: number | null; day?: number | null }): string | null {
+  if (!date?.year) return null
+  return `${date.year}-${String(date.month ?? 1).padStart(2, '0')}-${String(date.day ?? 1).padStart(2, '0')}`
+}
+
+/**
+ * Fallback de busca. O AniList devolve `idMal`, portanto o restante do fluxo
+ * continua usando o MAL/Jikan como identidade e consolidando as temporadas.
+ */
+async function searchAnimeViaAniList(query: string, limit: number): Promise<JikanAnime[]> {
+  try {
+    const res = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({
+        query: `
+          query SearchAnime($search: String!, $perPage: Int!) {
+            Page(page: 1, perPage: $perPage) {
+              media(search: $search, type: ANIME, isAdult: false, sort: SEARCH_MATCH) {
+                idMal
+                title { romaji english native }
+                description(asHtml: false)
+                averageScore episodes duration seasonYear format
+                startDate { year month day }
+                coverImage { large extraLarge }
+                genres
+                studios(isMain: true) { nodes { name } }
+              }
+            }
+          }
+        `,
+        variables: { search: query, perPage: Math.min(20, Math.max(1, limit)) },
+      }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) {
+      console.warn(`[anilist] HTTP ${res.status} for "${query}"`)
+      return []
+    }
+    const json = (await res.json()) as {
+      data?: {
+        Page?: {
+          media?: Array<{
+            idMal?: number | null
+            title?: { romaji?: string | null; english?: string | null; native?: string | null }
+            description?: string | null
+            averageScore?: number | null
+            episodes?: number | null
+            duration?: number | null
+            seasonYear?: number | null
+            format?: string | null
+            startDate?: { year?: number | null; month?: number | null; day?: number | null }
+            coverImage?: { large?: string | null; extraLarge?: string | null }
+            genres?: string[] | null
+            studios?: { nodes?: { name: string }[] }
+          }>
+        }
+      }
+    }
+    return (json.data?.Page?.media ?? [])
+      .filter((item): item is typeof item & { idMal: number } => typeof item.idMal === 'number')
+      .map((item) => ({
+        mal_id: item.idMal,
+        title: item.title?.romaji ?? item.title?.english ?? undefined,
+        title_english: item.title?.english ?? null,
+        title_japanese: item.title?.native ?? null,
+        synopsis: item.description?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() ?? null,
+        score: item.averageScore != null ? item.averageScore / 10 : null,
+        episodes: item.episodes ?? null,
+        duration: item.duration != null ? `${item.duration} min per ep` : null,
+        year: item.seasonYear ?? item.startDate?.year ?? null,
+        images: {
+          jpg: {
+            image_url: item.coverImage?.large ?? undefined,
+            large_image_url: item.coverImage?.extraLarge ?? item.coverImage?.large ?? undefined,
+          },
+        },
+        genres: item.genres?.map((name) => ({ name })) ?? [],
+        studios: item.studios?.nodes ?? [],
+        type: item.format === 'TV' || item.format === 'TV_SHORT' ? 'TV' : item.format ?? null,
+        aired: {
+          from: anilistDate(item.startDate),
+          prop: { from: { year: item.startDate?.year ?? null } },
+        },
+      }))
+  } catch (err) {
+    console.warn('[anilist] search failed:', (err as Error).message)
+    return []
+  }
+}
+
+/** Search anime by title, with AniList fallback when Jikan search is unavailable. */
 export async function searchAnime(query: string, limit = 5): Promise<JikanAnime[]> {
   try {
     const url = new URL(BASE + '/anime')
@@ -53,13 +144,13 @@ export async function searchAnime(query: string, limit = 5): Promise<JikanAnime[
     const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
     if (!res.ok) {
       console.warn(`[jikan] HTTP ${res.status} for "${query}"`)
-      return []
+      return searchAnimeViaAniList(query, limit)
     }
     const data = (await res.json()) as { data?: JikanAnime[] }
     return data.data ?? []
   } catch (err) {
     console.warn('[jikan] search failed:', (err as Error).message)
-    return []
+    return searchAnimeViaAniList(query, limit)
   }
 }
 

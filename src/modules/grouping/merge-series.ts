@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, sql, inArray } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, sql, inArray } from 'drizzle-orm'
 import { db } from '../../db'
 import { contents, content_torrents } from '../../types'
 
@@ -136,7 +136,13 @@ export async function mergeByMalId(): Promise<number> {
   const anime = await db
     .select()
     .from(contents)
-    .where(and(eq(contents.type, 'anime'), isNotNull(contents.mal_id)))
+    .where(
+      and(
+        eq(contents.type, 'anime'),
+        isNotNull(contents.mal_id),
+        isNull(contents.canonical_content_id),
+      ),
+    )
 
   const byMal = new Map<number, typeof anime>()
   for (const c of anime) {

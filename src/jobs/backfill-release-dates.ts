@@ -1,4 +1,5 @@
 import { and, desc, eq, isNotNull, isNull } from 'drizzle-orm'
+import { join } from 'path'
 import { client, db } from '../db'
 import { contents } from '../types'
 import { enrichContent } from '../modules/enrichment'
@@ -12,6 +13,12 @@ function numberArg(name: string, fallback: number): number {
 
 const year = numberArg('year', new Date().getFullYear())
 const limit = Math.min(numberArg('limit', 1_000), 5_000)
+
+if (process.argv.includes('--migrate')) {
+  const migration = join(import.meta.dir, '..', '..', 'migrations', '009_content_release_date.sql')
+  await client.file(migration)
+  console.log('[release-date] migration applied')
+}
 
 const candidates = await db
   .select()

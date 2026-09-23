@@ -441,10 +441,31 @@ async function mergeJikanCatalog(
   }
 
   for (const entry of franchise) {
+    // A contagem oficial da entrada é suficiente para montar o catálogo mesmo
+    // quando `/episodes` está em 429/504. Os metadados detalhados abaixo apenas
+    // enriquecem esses placeholders.
+    for (let localNumber = 1; localNumber <= (entry.episode_count ?? 0); localNumber++) {
+      const number = entry.episode_offset + localNumber
+      const key = `${entry.season_number}|${number}`
+      if (!byEpisode.has(key)) {
+        byEpisode.set(key, {
+          season: entry.season_number,
+          episode: number,
+          title: null,
+          air_date: null,
+          torrents: [],
+          metadata_source: 'jikan',
+        })
+      }
+    }
+
     const external = await loadJikanCatalog(entry.mal_id, force)
     for (const item of external) {
       const localNumber = item.mal_id
       if (!Number.isInteger(localNumber) || localNumber <= 0) continue
+      // Jikan ocasionalmente concatena/repete o cour seguinte no endpoint de
+      // uma parte (MAL 39551 já retornou 33 itens para uma entrada de 12).
+      if (entry.episode_count != null && localNumber > entry.episode_count) continue
       const number = entry.episode_offset + localNumber
       const key = `${entry.season_number}|${number}`
       const current = byEpisode.get(key)

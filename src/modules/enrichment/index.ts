@@ -67,7 +67,7 @@ async function cacheSet(source: string, key: string, response: any): Promise<voi
 // Mappers: external payload -> contents column update
 // ---------------------------------------------------------------------------
 
-function mapTmdb(d: any, mediaType: string): ContentUpdate {
+export function mapTmdb(d: any, mediaType: string): ContentUpdate {
   const title: string | undefined = d.title ?? d.name
   const originalReleaseDate: string = d.release_date ?? d.first_air_date ?? ''
   const year = originalReleaseDate ? parseInt(originalReleaseDate.slice(0, 4), 10) || null : null
@@ -121,7 +121,7 @@ function mapOmdb(d: omdb.OmdbResult): ContentUpdate {
   }
 }
 
-function mapJikan(a: mal.JikanAnime): ContentUpdate {
+export function mapJikan(a: mal.JikanAnime): ContentUpdate {
   const year = a.year ?? a.aired?.prop?.from?.year ?? null
   const durMatch = a.duration?.match(/(\d+)\s*min/i)
   const poster = a.images?.jpg?.large_image_url ?? a.images?.jpg?.image_url ?? null

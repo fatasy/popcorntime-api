@@ -26,6 +26,7 @@ import { resolveAuth } from '../auth/guard'
 import { refreshCatalogContent, type CatalogRefreshResult, type RefreshScope } from './refresh'
 import { resolveCanonicalContentId } from '../anime/franchise'
 import { fillGaps } from '../collection/fill-gaps'
+import { importExternalCatalog, searchExternalCatalog } from './external'
 
 // Evita que dois cliques (ou dois dispositivos) disparem o mesmo crawler em
 // paralelo para um título. Todos aguardam a execução já em curso.
@@ -555,6 +556,54 @@ export const catalogRoutes = new Elysia()
     },
   )
   // GET /search — search by title (same envelope as /catalog)
+  .get(
+    '/search/external',
+    async ({ query, set }) => {
+      const q = query.q.trim()
+      if (q.length < 2 || q.length > 80) {
+        set.status = 400
+        return { error: 'Search query must have between 2 and 80 characters' }
+      }
+      try {
+        return { data: await searchExternalCatalog(q, query.limit ?? 16) }
+      } catch (error) {
+        set.status = 502
+        return { error: (error as Error).message }
+      }
+    },
+    {
+      query: t.Object({
+        q: t.String(),
+        limit: t.Optional(t.Numeric({ minimum: 1, maximum: 20 })),
+      }),
+      detail: { summary: 'Search TMDB and MyAnimeList catalogs', tags: ['catalog'] },
+    },
+  )
+  .post(
+    '/catalog/import',
+    async ({ body, jwt, headers, set }) => {
+      const auth = await resolveAuth(jwt, headers)
+      if (!auth.ok) {
+        set.status = auth.status
+        return { error: auth.error }
+      }
+      try {
+        return await importExternalCatalog(body)
+      } catch (error) {
+        const message = (error as Error).message
+        set.status = /not found/i.test(message) ? 404 : 400
+        return { error: message }
+      }
+    },
+    {
+      body: t.Object({
+        provider: t.Union([t.Literal('tmdb'), t.Literal('jikan')]),
+        externalId: t.Numeric({ minimum: 1 }),
+        mediaType: t.Union([t.Literal('movie'), t.Literal('tv'), t.Literal('anime')]),
+      }),
+      detail: { summary: 'Import a title from an external catalog', tags: ['catalog'] },
+    },
+  )
   .get(
     '/search',
     async ({ query }) => {

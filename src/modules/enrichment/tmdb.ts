@@ -41,6 +41,8 @@ export interface TmdbSearchResult {
   vote_average?: number
   poster_path?: string | null
   backdrop_path?: string | null
+  genre_ids?: number[]
+  original_language?: string
 }
 
 /** Multi search (movies + tv), defaults to Brazilian Portuguese. */

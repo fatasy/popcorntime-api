@@ -281,11 +281,18 @@ export async function getAnime(id: number): Promise<JikanAnime | null> {
 
 /** Fetch metadata plus MAL relations (used to join seasons into one title). */
 export async function getAnimeFull(id: number): Promise<JikanAnimeFull | null> {
+  // O grafo do AniList usa os mesmos MAL IDs e tende a não carregar relações
+  // órfãs removidas do catálogo (o Jikan ainda lista algumas delas, como o
+  // MAL 39652 na franquia One-Punch Man). Isso evita abortar toda a cadeia por
+  // causa de uma entrada antiga que já não representa uma temporada válida.
+  const anilist = await getAnimeViaAniList(id)
+  if (anilist) return anilist
+
   // O endpoint `/full` do Jikan retorna 504 para alguns registros válidos.
   // Combinar os dois endpoints menores é mais confiável e contém os mesmos
-  // campos necessários para montar a franquia.
+  // campos necessários para montar a franquia quando o AniList está fora.
   const anime = await getAnimeViaJikan(id)
-  if (!anime) return getAnimeViaAniList(id)
+  if (!anime) return null
   await new Promise((resolve) => setTimeout(resolve, 350))
 
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -330,8 +337,7 @@ export async function getAnimeFull(id: number): Promise<JikanAnimeFull | null> {
     }
     if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 750))
   }
-  const fallback = await getAnimeViaAniList(id)
-  return fallback ? { ...fallback, ...anime, relations: fallback.relations ?? [] } : null
+  return null
 }
 
 // ─── Aired-episode count (for ongoing anime gap detection) ──────────────────

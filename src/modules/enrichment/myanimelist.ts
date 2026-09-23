@@ -42,9 +42,148 @@ export interface JikanEpisode {
   recap?: boolean | null
 }
 
+interface AniListMedia {
+  idMal?: number | null
+  title?: { romaji?: string | null; english?: string | null; native?: string | null }
+  description?: string | null
+  averageScore?: number | null
+  episodes?: number | null
+  duration?: number | null
+  seasonYear?: number | null
+  format?: string | null
+  status?: string | null
+  startDate?: { year?: number | null; month?: number | null; day?: number | null }
+  coverImage?: { large?: string | null; extraLarge?: string | null }
+  genres?: string[] | null
+  studios?: { nodes?: { name: string }[] }
+  relations?: {
+    edges?: Array<{
+      relationType?: string | null
+      node?: {
+        idMal?: number | null
+        type?: string | null
+        format?: string | null
+        title?: { romaji?: string | null; english?: string | null; native?: string | null }
+      } | null
+    }>
+  }
+}
+
+const anilistAnimeCache = new Map<number, { expiresAt: number; value: JikanAnimeFull }>()
+
 function anilistDate(date?: { year?: number | null; month?: number | null; day?: number | null }): string | null {
   if (!date?.year) return null
   return `${date.year}-${String(date.month ?? 1).padStart(2, '0')}-${String(date.day ?? 1).padStart(2, '0')}`
+}
+
+function mapAniListAnime(item: AniListMedia): JikanAnimeFull | null {
+  if (typeof item.idMal !== 'number') return null
+
+  const relations = new Map<string, JikanRelationEntry[]>()
+  for (const edge of item.relations?.edges ?? []) {
+    const relation = edge.relationType === 'PREQUEL'
+      ? 'Prequel'
+      : edge.relationType === 'SEQUEL'
+        ? 'Sequel'
+        : null
+    const node = edge.node
+    if (!relation || node?.type !== 'ANIME' || typeof node.idMal !== 'number') continue
+    const entries = relations.get(relation) ?? []
+    entries.push({
+      mal_id: node.idMal,
+      type: 'anime',
+      name: node.title?.romaji ?? node.title?.english ?? node.title?.native ?? `MAL ${node.idMal}`,
+    })
+    relations.set(relation, entries)
+  }
+
+  const status = item.status === 'RELEASING'
+    ? 'Currently Airing'
+    : item.status === 'FINISHED'
+      ? 'Finished Airing'
+      : item.status === 'NOT_YET_RELEASED'
+        ? 'Not yet aired'
+        : item.status ?? null
+
+  return {
+    mal_id: item.idMal,
+    title: item.title?.romaji ?? item.title?.english ?? undefined,
+    title_english: item.title?.english ?? null,
+    title_japanese: item.title?.native ?? null,
+    synopsis: item.description?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() ?? null,
+    score: item.averageScore != null ? item.averageScore / 10 : null,
+    episodes: item.episodes ?? null,
+    status,
+    duration: item.duration != null ? `${item.duration} min per ep` : null,
+    year: item.seasonYear ?? item.startDate?.year ?? null,
+    images: {
+      jpg: {
+        image_url: item.coverImage?.large ?? undefined,
+        large_image_url: item.coverImage?.extraLarge ?? item.coverImage?.large ?? undefined,
+      },
+    },
+    genres: item.genres?.map((name) => ({ name })) ?? [],
+    studios: item.studios?.nodes ?? [],
+    type: item.format === 'TV' || item.format === 'TV_SHORT' ? 'TV' : item.format ?? null,
+    aired: {
+      from: anilistDate(item.startDate),
+      prop: { from: { year: item.startDate?.year ?? null } },
+    },
+    relations: [...relations].map(([relation, entry]) => ({ relation, entry })),
+  }
+}
+
+/** AniList fallback by MAL id, including the prequel/sequel graph. */
+async function getAnimeViaAniList(id: number): Promise<JikanAnimeFull | null> {
+  const cached = anilistAnimeCache.get(id)
+  if (cached && cached.expiresAt > Date.now()) return cached.value
+
+  try {
+    const res = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({
+        query: `
+          query AnimeByMal($idMal: Int!) {
+            Media(idMal: $idMal, type: ANIME) {
+              idMal
+              title { romaji english native }
+              description(asHtml: false)
+              averageScore episodes duration seasonYear format status
+              startDate { year month day }
+              coverImage { large extraLarge }
+              genres
+              studios(isMain: true) { nodes { name } }
+              relations {
+                edges {
+                  relationType
+                  node {
+                    idMal type format
+                    title { romaji english native }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { idMal: id },
+      }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) {
+      console.warn(`[anilist] anime mal:${id} HTTP ${res.status}`)
+      return null
+    }
+    const json = (await res.json()) as { data?: { Media?: AniListMedia | null } }
+    const anime = json.data?.Media ? mapAniListAnime(json.data.Media) : null
+    if (anime) {
+      anilistAnimeCache.set(id, { expiresAt: Date.now() + 30 * 60_000, value: anime })
+    }
+    return anime
+  } catch (err) {
+    console.warn(`[anilist] anime mal:${id} failed:`, (err as Error).message)
+    return null
+  }
 }
 
 /**
@@ -81,52 +220,10 @@ async function searchAnimeViaAniList(query: string, limit: number): Promise<Jika
       console.warn(`[anilist] HTTP ${res.status} for "${query}"`)
       return []
     }
-    const json = (await res.json()) as {
-      data?: {
-        Page?: {
-          media?: Array<{
-            idMal?: number | null
-            title?: { romaji?: string | null; english?: string | null; native?: string | null }
-            description?: string | null
-            averageScore?: number | null
-            episodes?: number | null
-            duration?: number | null
-            seasonYear?: number | null
-            format?: string | null
-            startDate?: { year?: number | null; month?: number | null; day?: number | null }
-            coverImage?: { large?: string | null; extraLarge?: string | null }
-            genres?: string[] | null
-            studios?: { nodes?: { name: string }[] }
-          }>
-        }
-      }
-    }
+    const json = (await res.json()) as { data?: { Page?: { media?: AniListMedia[] } } }
     return (json.data?.Page?.media ?? [])
-      .filter((item): item is typeof item & { idMal: number } => typeof item.idMal === 'number')
-      .map((item) => ({
-        mal_id: item.idMal,
-        title: item.title?.romaji ?? item.title?.english ?? undefined,
-        title_english: item.title?.english ?? null,
-        title_japanese: item.title?.native ?? null,
-        synopsis: item.description?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() ?? null,
-        score: item.averageScore != null ? item.averageScore / 10 : null,
-        episodes: item.episodes ?? null,
-        duration: item.duration != null ? `${item.duration} min per ep` : null,
-        year: item.seasonYear ?? item.startDate?.year ?? null,
-        images: {
-          jpg: {
-            image_url: item.coverImage?.large ?? undefined,
-            large_image_url: item.coverImage?.extraLarge ?? item.coverImage?.large ?? undefined,
-          },
-        },
-        genres: item.genres?.map((name) => ({ name })) ?? [],
-        studios: item.studios?.nodes ?? [],
-        type: item.format === 'TV' || item.format === 'TV_SHORT' ? 'TV' : item.format ?? null,
-        aired: {
-          from: anilistDate(item.startDate),
-          prop: { from: { year: item.startDate?.year ?? null } },
-        },
-      }))
+      .map(mapAniListAnime)
+      .filter((item): item is JikanAnimeFull => item !== null)
   } catch (err) {
     console.warn('[anilist] search failed:', (err as Error).message)
     return []
@@ -154,8 +251,7 @@ export async function searchAnime(query: string, limit = 5): Promise<JikanAnime[
   }
 }
 
-/** Fetch a single anime by MAL id. */
-export async function getAnime(id: number): Promise<JikanAnime | null> {
+async function getAnimeViaJikan(id: number): Promise<JikanAnime | null> {
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
       const res = await fetch(`${BASE}/anime/${id}`, {
@@ -178,13 +274,18 @@ export async function getAnime(id: number): Promise<JikanAnime | null> {
   return null
 }
 
+/** Fetch a single anime by MAL id, with AniList fallback. */
+export async function getAnime(id: number): Promise<JikanAnime | null> {
+  return (await getAnimeViaJikan(id)) ?? getAnimeViaAniList(id)
+}
+
 /** Fetch metadata plus MAL relations (used to join seasons into one title). */
 export async function getAnimeFull(id: number): Promise<JikanAnimeFull | null> {
   // O endpoint `/full` do Jikan retorna 504 para alguns registros válidos.
   // Combinar os dois endpoints menores é mais confiável e contém os mesmos
   // campos necessários para montar a franquia.
-  const anime = await getAnime(id)
-  if (!anime) return null
+  const anime = await getAnimeViaJikan(id)
+  if (!anime) return getAnimeViaAniList(id)
   await new Promise((resolve) => setTimeout(resolve, 350))
 
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -196,7 +297,7 @@ export async function getAnimeFull(id: number): Promise<JikanAnimeFull | null> {
         const data = (await res.json()) as { data?: JikanAnimeFull['relations'] }
         return { ...anime, relations: data.data ?? [] }
       }
-      if (res.status !== 429 && res.status < 500) return null
+      if (res.status !== 429 && res.status < 500) break
       console.warn(`[jikan] getAnimeFull mal:${id} HTTP ${res.status} (attempt ${attempt}/3)`)
     } catch (err) {
       console.warn(
@@ -219,7 +320,7 @@ export async function getAnimeFull(id: number): Promise<JikanAnimeFull | null> {
         const data = (await res.json()) as { data?: JikanAnimeFull }
         return data.data ?? null
       }
-      if (res.status !== 429 && res.status < 500) return null
+      if (res.status !== 429 && res.status < 500) break
       console.warn(`[jikan] getAnimeFull fallback mal:${id} HTTP ${res.status} (attempt ${attempt}/3)`)
     } catch (err) {
       console.warn(
@@ -229,7 +330,8 @@ export async function getAnimeFull(id: number): Promise<JikanAnimeFull | null> {
     }
     if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 750))
   }
-  return null
+  const fallback = await getAnimeViaAniList(id)
+  return fallback ? { ...fallback, ...anime, relations: fallback.relations ?? [] } : null
 }
 
 // ─── Aired-episode count (for ongoing anime gap detection) ──────────────────
@@ -253,7 +355,7 @@ export async function getAnimeAiredEpisodeCount(id: number): Promise<number | nu
     const p1 = await fetch(`${BASE}/anime/${id}/episodes`, {
       signal: AbortSignal.timeout(15_000),
     })
-    if (!p1.ok) return null
+    if (!p1.ok) return (await getAnimeViaAniList(id))?.episodes ?? null
     const j1 = (await p1.json()) as {
       data?: { episode?: number }[]
       pagination?: { last_visible_page?: number; has_next_page?: boolean }
@@ -273,7 +375,7 @@ export async function getAnimeAiredEpisodeCount(id: number): Promise<number | nu
     return max || null
   } catch (err) {
     console.warn('[jikan] episodes failed:', (err as Error).message)
-    return null
+    return (await getAnimeViaAniList(id))?.episodes ?? null
   }
 }
 

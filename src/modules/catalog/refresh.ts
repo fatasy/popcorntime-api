@@ -34,6 +34,11 @@ export async function refreshCatalogContent(
   // obra é única: descobre a cadeia e consolida tudo antes de buscar fontes.
   if (before.type === 'anime' && before.mal_id) {
     const consolidated = await consolidateAnimeFranchise(canonicalId)
+    if (consolidated.entries.length === 0) {
+      throw new Error(
+        'External anime franchise catalog is temporarily unavailable; no partial refresh was applied',
+      )
+    }
     canonicalId = consolidated.contentId
     ;[before] = await db.select().from(contents).where(eq(contents.id, canonicalId)).limit(1)
     if (!before) throw new Error('Content not found after anime consolidation')

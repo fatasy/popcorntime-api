@@ -65,17 +65,26 @@ export async function searchAnime(query: string, limit = 5): Promise<JikanAnime[
 
 /** Fetch a single anime by MAL id. */
 export async function getAnime(id: number): Promise<JikanAnime | null> {
-  try {
-    const res = await fetch(`${BASE}/anime/${id}`, {
-      signal: AbortSignal.timeout(15_000),
-    })
-    if (!res.ok) return null
-    const data = (await res.json()) as { data?: JikanAnime }
-    return data.data ?? null
-  } catch (err) {
-    console.warn('[jikan] getAnime failed:', (err as Error).message)
-    return null
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const res = await fetch(`${BASE}/anime/${id}`, {
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (res.ok) {
+        const data = (await res.json()) as { data?: JikanAnime }
+        return data.data ?? null
+      }
+      if (res.status !== 429 && res.status < 500) return null
+      console.warn(`[jikan] getAnime mal:${id} HTTP ${res.status} (attempt ${attempt}/4)`)
+    } catch (err) {
+      console.warn(
+        `[jikan] getAnime mal:${id} failed (attempt ${attempt}/4):`,
+        (err as Error).message,
+      )
+    }
+    if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, attempt * 1_000))
   }
+  return null
 }
 
 /** Fetch metadata plus MAL relations (used to join seasons into one title). */

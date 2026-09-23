@@ -112,6 +112,45 @@ function mapJikanSearch(item: JikanAnime): RawExternalCatalogResult | null {
   }
 }
 
+function animeTitleStem(value?: string | null): string {
+  return (value ?? '')
+    .toLocaleLowerCase('en')
+    .replace(/\b(?:the\s+)?final\s+season\b/gi, ' ')
+    .replace(/\b(?:season\s*\d+|\d+(?:st|nd|rd|th)\s+season|part\s*\d+|cour\s*\d+)\b/gi, ' ')
+    .replace(/第\s*\d+\s*期/g, ' ')
+    .normalize('NFKD')
+    .replace(/[^a-z0-9\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]+/gu, ' ')
+    .trim()
+}
+
+function isExplicitAnimeContinuation(item: JikanAnime): boolean {
+  return [item.title, item.title_english, item.title_japanese].some((value) =>
+    /\b(?:(?:the\s+)?final\s+season|season\s*\d+|\d+(?:st|nd|rd|th)\s+season|part\s*\d+|cour\s*\d+)\b|第\s*\d+\s*期/i.test(value ?? ''),
+  )
+}
+
+/**
+ * A busca externa deve mostrar a obra, não um card para cada temporada. Se o
+ * provedor devolver a raiz e sequências explícitas, conserva apenas a raiz;
+ * a consolidação do MAL descobre essas temporadas depois da importação.
+ */
+function collapseAnimeSeasons(items: JikanAnime[]): JikanAnime[] {
+  const roots = items.filter((item) => !isExplicitAnimeContinuation(item))
+  if (roots.length === 0) return items
+  const rootStems = roots.flatMap((item) =>
+    [item.title, item.title_english, item.title_japanese]
+      .map(animeTitleStem)
+      .filter((title) => title.length >= 4),
+  )
+  return items.filter((item) => {
+    if (!isExplicitAnimeContinuation(item)) return true
+    const stems = [item.title, item.title_english, item.title_japanese]
+      .map(animeTitleStem)
+      .filter((title) => title.length >= 4)
+    return !stems.some((stem) => rootStems.some((root) => stem.startsWith(root) || root.startsWith(stem)))
+  })
+}
+
 function interleave<T>(left: T[], right: T[]): T[] {
   const result: T[] = []
   const length = Math.max(left.length, right.length)
@@ -169,7 +208,9 @@ export async function searchExternalCatalog(
       ? tmdbResult.value.map(mapTmdbSearch).filter((item): item is RawExternalCatalogResult => !!item)
       : []
     const jikan = jikanResult.status === 'fulfilled'
-      ? jikanResult.value.map(mapJikanSearch).filter((item): item is RawExternalCatalogResult => !!item)
+      ? collapseAnimeSeasons(jikanResult.value)
+          .map(mapJikanSearch)
+          .filter((item): item is RawExternalCatalogResult => !!item)
       : []
     raw = {
       expiresAt: Date.now() + SEARCH_TTL_MS,

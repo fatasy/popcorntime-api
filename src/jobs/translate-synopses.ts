@@ -48,6 +48,8 @@ async function translate(apiKey: string, text: string): Promise<TranslationResul
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
+        'User-Agent': 'fpopcorntime-synopsis-agent/1.0',
+        'x-opencode-session': 'fpopcorntime-synopsis-translation',
       },
       body: JSON.stringify({
         model: MODEL,

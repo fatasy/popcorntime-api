@@ -3,8 +3,10 @@ import { normalizeToVtt } from './normalize'
 import { openSubtitlesProvider } from './providers/opensubtitles'
 import { subdlProvider } from './providers/subdl'
 import type { SubtitleProvider, SubtitleQuery, SubtitleResult } from './types'
-import { join } from 'path'
+import { createHmac, timingSafeEqual } from 'crypto'
+import { join, resolve, sep } from 'path'
 import { existsSync } from 'fs'
+import { env } from '../../env'
 
 const PROVIDERS: SubtitleProvider[] = [openSubtitlesProvider, subdlProvider]
 const PER_PROVIDER_TIMEOUT = 9000
@@ -94,6 +96,42 @@ export async function searchSubtitleVariants(
 export function encodeToken(r: SubtitleResult): string {
   return Buffer.from(JSON.stringify({ p: r.provider, r: r.ref }), 'utf8').toString('base64url')
 }
+
+export function encodeTranslationSource(
+  result: SubtitleResult,
+  context: { contentId: number; season?: number; episode?: number },
+): string {
+  const payload = Buffer.from(JSON.stringify({
+    token: encodeToken(result),
+    contentId: context.contentId,
+    season: context.season,
+    episode: context.episode,
+    lang: result.lang,
+  }), 'utf8').toString('base64url')
+  const signature = createHmac('sha256', env.JWT_SECRET).update(payload).digest('base64url')
+  return `${payload}.${signature}`
+}
+
+export function decodeTranslationSource(ref: string): {
+  token: string
+  contentId: number
+  season?: number
+  episode?: number
+  lang?: string
+} {
+  const [payload, signature] = ref.split('.')
+  if (!payload || !signature) throw new Error('Fonte de legenda inválida')
+  const expected = createHmac('sha256', env.JWT_SECRET).update(payload).digest()
+  const actual = Buffer.from(signature, 'base64url')
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+    throw new Error('Fonte de legenda inválida')
+  }
+  const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
+  if (!decoded || typeof decoded.token !== 'string' || !Number.isInteger(decoded.contentId)) {
+    throw new Error('Fonte de legenda inválida')
+  }
+  return decoded
+}
 function decodeToken(token: string): { p: string; r: string } {
   return JSON.parse(Buffer.from(token, 'base64url').toString('utf8'))
 }
@@ -106,12 +144,18 @@ export async function fetchVttByToken(token: string): Promise<string> {
   if (cached) return cached
   const { p, r } = decodeToken(token)
   // Local provider: ref = "contentId:filename"
-  if (p === 'local') {
+  if (p === 'local' || p === 'opencode-go') {
     const [contentId, ...rest] = r.split(':')
     if (!contentId) throw new Error('Referência de legenda local inválida')
-    const filename = rest.join(':')
-    const localDir = join(import.meta.dir, '..', '..', '..', 'local-subtitles', contentId)
-    const filepath = join(localDir, filename)
+    const relativePath = rest.join(':').replace(/\\/g, '/')
+    if (!relativePath || relativePath.split('/').some((part) => part === '..')) {
+      throw new Error('Referência de legenda local inválida')
+    }
+    const localDir = resolve(import.meta.dir, '..', '..', '..', 'local-subtitles', contentId)
+    const filepath = resolve(localDir, ...relativePath.split('/'))
+    if (filepath !== localDir && !filepath.startsWith(localDir + sep)) {
+      throw new Error('Referência de legenda local inválida')
+    }
     if (!existsSync(filepath)) throw new Error('Arquivo de legenda local não encontrado')
     const raw = await Bun.file(filepath).bytes()
     const vtt = normalizeToVtt(raw)

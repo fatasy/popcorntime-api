@@ -40,6 +40,9 @@ const PACK_PATTERNS = [
   /\bSeason\b/i,
   /\bComplete\b/i,
   /S\d{2}E\d{2}-/i,
+  /\bS\d{1,2}\b(?!E)/i,
+  /\bBATCH\b/i,
+  /\b\d{1,3}\s*[~–]\s*\d{1,3}\b/i,
 ]
 
 function isPack(title: string): boolean {

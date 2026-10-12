@@ -108,6 +108,13 @@ existentes. A validação opcional `bun scripts/check-http-sources.ts` lê pági
 HTML/JSON e cabeçalhos HEAD, sem baixar vídeos. Também é possível verificar
 somente a AnimeFire com `bun scripts/check-http-sources.ts "Overgeared" 3 animefire`.
 
+Na validação desta VPS em 12/10/2026 (UTC), os links dublado e legendado da
+AnimesDigital foram resolvidos no servidor e responderam HTTP 200 no cliente.
+A API pública da AnimeFire respondeu HTTP 403 com bloqueio do Cloudflare para
+a VPS. A integração permanece cadastrada, mas sua coleta/resolução nesta VPS
+depende de o provedor permitir esse acesso. O erro aparece em `sourceWarnings`
+sem impedir a coleta da AnimesDigital.
+
 ## Estrutura do projeto
 
 ```

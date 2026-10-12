@@ -1,6 +1,28 @@
 // Jikan v4 — unofficial MyAnimeList API, no auth required.
 const BASE = 'https://api.jikan.moe/v4'
 
+/**
+ * Circuit breaker do Jikan/MAL. Ele cai com frequência (timeout/429/504) e cada
+ * chamada custa 15s — a lista de episódios de uma franquia paga isso por entrada
+ * (6 entradas no AoT ≈ 90s) e o request morre em 502 no proxy. Depois de uma
+ * falha, o módulo para de bater por alguns minutos e devolve vazio na hora.
+ */
+const JIKAN_COOLDOWN_MS = 5 * 60 * 1000
+let jikanDownUntil = 0
+
+export function jikanIsDown(): boolean {
+  return Date.now() < jikanDownUntil
+}
+
+function markJikanFailure(): void {
+  if (!jikanIsDown()) console.warn('[jikan] marcando indisponível por 5min (circuit breaker)')
+  jikanDownUntil = Date.now() + JIKAN_COOLDOWN_MS
+}
+
+function markJikanOk(): void {
+  jikanDownUntil = 0
+}
+
 export interface JikanAnime {
   mal_id: number
   title?: string
@@ -392,6 +414,7 @@ export async function getAnimeAiredEpisodeCount(id: number): Promise<number | nu
 export async function getAnimeEpisodes(id: number): Promise<JikanEpisode[]> {
   const episodes: JikanEpisode[] = []
   let page = 1
+  if (jikanIsDown()) return episodes
 
   try {
     while (page <= 100) {
@@ -406,12 +429,14 @@ export async function getAnimeEpisodes(id: number): Promise<JikanEpisode[]> {
         data?: JikanEpisode[]
         pagination?: { has_next_page?: boolean }
       }
+      markJikanOk()
       episodes.push(...(json.data ?? []))
       if (!json.pagination?.has_next_page) break
       page++
       await new Promise((resolve) => setTimeout(resolve, 350))
     }
   } catch (err) {
+    markJikanFailure()
     console.warn(`[jikan] episode catalog failed for mal:${id}:`, (err as Error).message)
   }
 

@@ -286,10 +286,19 @@ interface EpisodeTorrent {
   magnet_link: string
   title: string
   seeds: number
-  file_index: number | null     // índice estimado do arquivo dentro do torrent
+  file_index: number | null     // índice REAL do arquivo dentro do torrent
   inferred: boolean             // true se o mapeamento é estimado/heurístico
+  quality: string | null
+  size_bytes: number | null
+  collected_at: string | null
+  ptbr_audio: boolean           // título declara áudio PT-BR (dublado / dual PT-BR)
 }
 ```
+
+**Ordem das fontes**: áudio PT-BR primeiro, depois mais seeds (EZTV por último). Vale
+para a lista de cada episódio e para `seasons[].torrents` no detalhe. `file_index` vem
+do nome dos arquivos (`file_list`) quando disponível — packs não vêm necessariamente em
+ordem de episódio — e só cai no índice posicional sem `file_list`.
 
 ---
 

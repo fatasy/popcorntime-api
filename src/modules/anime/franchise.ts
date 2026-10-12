@@ -259,6 +259,13 @@ export async function consolidateAnimeFranchise(contentId: number): Promise<{
     for (const [sourceId, source] of sourceById) {
       const entry = source.mal_id ? entryByMal.get(source.mal_id) : undefined
       if (!entry) continue
+      // O conteúdo canônico é a fonte da verdade da numeração dele — inclui
+      // convenções que o release não carrega no título, como pack "COMPLETO"
+      // vinculado com `season` nula (cobre a série toda) ou pack por parte
+      // ligado na temporada certa. Renumerar aqui sobrescrevia esses vínculos
+      // (tudo virava temporada 1) e as fontes dubladas sumiam das temporadas.
+      // A renumeração continua valendo para vínculos vindos de alias/dublê.
+      if (sourceId === canonicalId) continue
       const linked = await tx
         .select({
           torrentId: content_torrents.torrent_id,

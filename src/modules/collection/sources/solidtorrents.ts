@@ -1,6 +1,7 @@
 import { buildMagnet, USER_AGENT, type RawTorrent } from '../../../lib/parse'
 
-const API = 'https://solidtorrents.to/api/v1/search'
+// solidtorrents.to -> bitsearch.to -> bitsearch.eu (301 chain). .eu é o origin atual (200).
+const API = 'https://bitsearch.eu/api/v1/search'
 
 // ─── Rate limiter ──────────────────────────────────────────────────────────
 let lastRequestTime = 0

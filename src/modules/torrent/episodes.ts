@@ -5,7 +5,7 @@ import { mergeHttpEpisodeSources, type HttpEpisodeSource } from '../streams/epis
 import { getTV, getSeasonEpisodes } from '../enrichment/tmdb'
 import { getAnimeEpisodes, type JikanEpisode } from '../enrichment/myanimelist'
 import * as aniskip from '../enrichment/aniskip'
-import { parseRelease } from '../../lib/parse'
+import { parseRelease, hasPortugueseAudio } from '../../lib/parse'
 import { classifySeasonCoverage, type SeasonCoverage } from './season-coverage'
 import { extractQualityLabel } from './quality'
 
@@ -21,6 +21,8 @@ export interface EpisodeTorrent {
   quality: string | null
   size_bytes: number | null
   collected_at: string | null
+  /** Áudio em português (dublado/dual PT-BR) declarado no título. */
+  ptbr_audio: boolean
 }
 
 /**
@@ -62,6 +64,99 @@ interface LinkedTorrent {
   episode: number | null
   source: string | null
   collected_at: Date | null
+  /** Nomes/tamanhos dos arquivos do torrent (jsonb) — usado p/ achar o arquivo do episódio. */
+  file_list?: unknown
+}
+
+// ─── Arquivo do episódio dentro de um pack ────────────────────────────────
+
+/**
+ * Número do episódio lido do NOME do arquivo. Packs nem sempre vêm em ordem de
+ * episódio (ex.: `[IceBlue] … 2º Temporada` = 03, 02, 01, 04…) — o índice
+ * posicional tocaria o arquivo errado.
+ */
+function episodeNumberFromFileName(name: string): number | null {
+  // [regex, grupo que carrega o número do EPISÓDIO]. A resolução (1920x1080) fica
+  // de fora porque o padrão SxxExx-like exige que o 1º número não tenha dígito antes.
+  const patterns: [RegExp, number][] = [
+    [/(?<!\d)(\d{1,2})x(\d{1,3})(?!\d)/i, 2], // AoTDublado02x03.mkv → 3
+    [/\bS(\d{1,2})E(\d{1,3})\b/i, 2], // S02E03 → 3
+    [/\bE(?:p|pisode)?[\s._-]*(\d{1,3})(?:v\d)?\b/i, 1], // Ep03 / Episode 3
+    [/\s-\s(\d{1,3})(?:v\d)?\b/i, 1], // "… - 03"
+    [/[_\s](\d{1,3})(?:v\d)?\.\w+$/i, 1], // "…_03.mkv"
+  ]
+  for (const [re, group] of patterns) {
+    const m = name.match(re)
+    if (m) {
+      const n = Number(m[group])
+      if (Number.isInteger(n) && n > 0) return n
+    }
+  }
+  return null
+}
+
+/** O que o resolver precisa saber de cada vínculo `content_torrents`. */
+interface LinkMeta {
+  fileList: unknown
+  /** Temporada declarada no vínculo — `null` = pack da série toda (COMPLETO). */
+  season: number | null
+}
+
+interface SeasonIndexEntry {
+  season_number: number
+  part_number: number
+  episode_offset: number
+  episode_count: number | null
+}
+
+/**
+ * O arquivo é um episódio numerado da série? OVA/OAD/especial/extra não são, e o
+ * nome deles ("… - OVA 1.mkv") casaria com o episódio 1 da temporada 1.
+ */
+function isEpisodeFile(path: string): boolean {
+  if (!/\.(mkv|mp4|avi|ts|m2ts)$/i.test(path)) return false
+  if (/(ova|oad|kuinaki|lost\s*girls|special|nced|ncop|movie|recap|chronicle|preview|menu)/i.test(path)) {
+    return false
+  }
+  return true
+}
+
+/**
+ * Mapa `número absoluto do episódio → (temporada, episódio)` somando os episódios
+ * das entradas da franquia (S1 1-25, S2 26-37, S3 38-59, S4 60-87 no caso de AoT).
+ * É como os packs "COMPLETO" numeram seus arquivos.
+ */
+function buildAbsoluteSeasonIndex(entries: SeasonIndexEntry[]): Map<number, { season: number; episode: number }> {
+  const perSeason = new Map<number, number>()
+  for (const entry of entries) {
+    const length = (entry.episode_offset ?? 0) + (entry.episode_count ?? 0)
+    perSeason.set(entry.season_number, Math.max(perSeason.get(entry.season_number) ?? 0, length))
+  }
+  const index = new Map<number, { season: number; episode: number }>()
+  let cumulative = 0
+  for (const season of [...perSeason.keys()].sort((a, b) => a - b)) {
+    const total = perSeason.get(season) ?? 0
+    for (let local = 1; local <= total; local++) {
+      index.set(cumulative + local, { season, episode: local })
+    }
+    cumulative += total
+  }
+  return index
+}
+
+/**
+ * Índice (0-based, ordem do torrent) do arquivo que corresponde ao episódio,
+ * derivado do `file_list`. `null` quando nenhum arquivo casa — o chamador então
+ * usa o índice posicional antigo.
+ */
+function fileIndexForEpisode(fileList: unknown, episode: number): number | null {
+  if (!Array.isArray(fileList) || fileList.length === 0) return null
+  for (let i = 0; i < fileList.length; i++) {
+    const name = (fileList[i] as { name?: unknown } | null)?.name
+    if (typeof name !== 'string' || !isEpisodeFile(name)) continue
+    if (episodeNumberFromFileName(name) === episode) return i
+  }
+  return null
 }
 
 // ─── Helper ─────────────────────────────────────────────────────────────
@@ -81,7 +176,21 @@ function makeEpisodeTorrent(
     quality: extractQualityLabel(t.title),
     size_bytes: t.size_bytes ?? null,
     collected_at: t.collected_at ? t.collected_at.toISOString() : null,
+    ptbr_audio: hasPortugueseAudio(t.title ?? ''),
   }
+}
+
+/**
+ * Ordem das fontes de um episódio: áudio PT-BR primeiro (preferência declarada),
+ * depois mais seeds, e EZTV (seed sempre 0) por último no empate.
+ */
+function compareEpisodeSources(a: EpisodeTorrent, b: EpisodeTorrent): number {
+  if (a.ptbr_audio !== b.ptbr_audio) return a.ptbr_audio ? -1 : 1
+  const seedDiff = b.seeds - a.seeds
+  if (seedDiff !== 0) return seedDiff
+  const aEztv = a.title?.includes('[EZTV') ? 1 : 0
+  const bEztv = b.title?.includes('[EZTV') ? 1 : 0
+  return aEztv - bEztv
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────
@@ -122,10 +231,20 @@ export async function resolveEpisodes(
       episode: content_torrents.episode,
       source: torrents.source,
       collected_at: torrents.collected_at,
+      file_list: torrents.file_list,
     })
     .from(content_torrents)
     .innerJoin(torrents, eq(torrents.id, content_torrents.torrent_id))
     .where(eq(content_torrents.content_id, contentId))
+
+  // Metadados por hash: `file_list` deixa o pack apontar o arquivo certo do
+  // episódio mesmo quando a ordem do torrent não é a dos episódios, e a
+  // temporada declarada em `content_torrents` distingue pack de temporada de
+  // pack "COMPLETO" (temporada nula → numeração absoluta).
+  const linkMeta = new Map<string, LinkMeta>()
+  for (const t of linked) {
+    linkMeta.set(t.hash, { fileList: t.file_list ?? null, season: t.season })
+  }
 
   // 3. Resolve episodes (TMDB first, heuristic fallback)
   let episodes: EpisodeInfo[]
@@ -147,7 +266,7 @@ export async function resolveEpisodes(
   // episódios sem fonte. Jikan fornece a lista; os torrents já resolvidos são
   // mesclados pelo número do episódio.
   if (!content.tmdb_id && content.mal_id) {
-    episodes = await mergeJikanCatalog(contentId, content.mal_id, episodes, !!options.forceExternal)
+    episodes = await mergeJikanCatalog(contentId, content.mal_id, episodes, !!options.forceExternal, linkMeta)
   }
 
   if (content.type === 'anime') {
@@ -177,6 +296,13 @@ export async function resolveEpisodes(
     } else {
       await attachAniskipMarkers(content.mal_id, episodes)
     }
+  }
+
+  // Ordena as fontes de cada episódio (PT-BR primeiro) — a lista é montada em
+  // três caminhos diferentes (TMDB, heurístico e franquia) e o pack completo é
+  // anexado no fim, então a ordenação é feita uma vez, aqui.
+  for (const episode of episodes) {
+    episode.torrents.sort(compareEpisodeSources)
   }
 
   return episodes
@@ -420,6 +546,7 @@ async function mergeJikanCatalog(
   malId: number,
   existing: EpisodeInfo[],
   force: boolean,
+  linkMeta: Map<string, LinkMeta> = new Map(),
 ): Promise<EpisodeInfo[]> {
   let franchise = await db
     .select()
@@ -502,9 +629,13 @@ async function mergeJikanCatalog(
             (candidate) =>
               candidate.season_number === generic.season && candidate.part_number === part,
           )
+      // Faixa de episódios no título: " - 01 ~ 12", "S01E01-12" e o formato
+      // brasileiro "(01-12)" / "(13-22)" — sem isso, os dois packs de uma
+      // temporada dividida em partes se espalham pelos episódios um do outro.
       const range =
         torrent.title.match(/\s-\s(?:s\d{1,2}e)?(\d{1,3})\s*[~–-]\s*(?:s\d{1,2}e)?(\d{1,3})\b/i) ??
-        torrent.title.match(/\bs\d{1,2}e(\d{1,3})\s*-\s*(?:s\d{1,2}e)?(\d{1,3})\b/i)
+        torrent.title.match(/\bs\d{1,2}e(\d{1,3})\s*-\s*(?:s\d{1,2}e)?(\d{1,3})\b/i) ??
+        torrent.title.match(/\((\d{1,3})\s*[~–-]\s*(\d{1,3})\)/)
       const offset = entry?.episode_offset ?? 0
       const start = range ? offset + Number(range[1]) : offset + 1
       const end = range
@@ -519,9 +650,39 @@ async function mergeJikanCatalog(
         if (episode.torrents.some((candidate) => candidate.hash === torrent.hash)) continue
         episode.torrents.push({
           ...torrent,
-          file_index: episode.episode - start,
+          // O pack pode não estar em ordem de episódio: prefere o arquivo cujo
+          // nome casa com o episódio; sem `file_list`, mantém o índice posicional.
+          file_index:
+            fileIndexForEpisode(linkMeta.get(torrent.hash)?.fileList, episode.episode) ??
+            episode.episode - start,
           inferred: true,
         })
+      }
+    }
+  }
+
+  // Pack "COMPLETO" (temporada nula no vínculo): a numeração dos arquivos é
+  // ABSOLUTA na série (S1 01-25, S2 26-37, S3 38-59, S4 60-87), então cada
+  // arquivo vai para o (temporada, episódio) calculado pela soma dos episódios
+  // das entradas da franquia — com o índice REAL do arquivo no torrent.
+  // Arquivos que não são episódio (OVA, filme, special) ficam de fora.
+  const absoluteIndex = buildAbsoluteSeasonIndex(franchise)
+  for (const pack of existing.filter((episode) => episode.episode <= 0)) {
+    for (const torrent of pack.torrents) {
+      const meta = linkMeta.get(torrent.hash)
+      if (!meta || meta.season != null || !Array.isArray(meta.fileList)) continue
+      const files = meta.fileList as { name?: unknown }[]
+      for (let i = 0; i < files.length; i++) {
+        const name = files[i]?.name
+        if (typeof name !== 'string' || !isEpisodeFile(name)) continue
+        const absolute = episodeNumberFromFileName(name)
+        if (absolute == null) continue
+        const target = absoluteIndex.get(absolute)
+        if (!target) continue
+        const episode = byEpisode.get(`${target.season}|${target.episode}`)
+        if (!episode) continue
+        if (episode.torrents.some((candidate) => candidate.hash === torrent.hash)) continue
+        episode.torrents.push({ ...torrent, file_index: i, inferred: true })
       }
     }
   }
@@ -550,10 +711,15 @@ function resolveHeuristic(linked: LinkedTorrent[]): EpisodeInfo[] {
     // parser transformar o início de um range (`01 ~ 12`) em episódio único.
     const episode = t.season != null ? (t.episode ?? 0) : (parsed.episode ?? 0)
 
+    // Torrent de arquivo único (release por episódio): o arquivo é o índice 0.
+    // Sem isso o vínculo por episódio herdava `episodio - 1` e apontava para um
+    // arquivo que não existe dentro do torrent.
+    const singleFile = Array.isArray(t.file_list) && (t.file_list as unknown[]).length === 1
+
     const key = `${season}|${episode}`
     if (!episodeMap.has(key)) episodeMap.set(key, [])
     episodeMap.get(key)!.push(makeEpisodeTorrent(t, {
-      file_index: season > 0 && episode > 0 ? episode - 1 : null,
+      file_index: singleFile ? 0 : season > 0 && episode > 0 ? episode - 1 : null,
       inferred: true,
     }))
   }

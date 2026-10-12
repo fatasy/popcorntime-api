@@ -20,7 +20,7 @@ import { db } from '../../db'
 import { anime_franchise_entries, contents, content_torrents, torrents } from '../../types'
 import { resolveEpisodes, type EpisodeInfo } from '../torrent/episodes'
 import { classifySeasonCoverage, type SeasonCoverage } from '../torrent/season-coverage'
-import { extractQuality } from '../../lib/parse'
+import { extractQuality, hasPortugueseAudio } from '../../lib/parse'
 import { jwtPlugin } from '../auth/jwt'
 import { resolveAuth } from '../auth/guard'
 import { refreshCatalogContent, type CatalogRefreshResult, type RefreshScope } from './refresh'
@@ -189,6 +189,22 @@ function buildFilters(input: FilterInput): SQL[] {
   return conds
 }
 
+/**
+ * Ordem das fontes exibidas: áudio PT-BR primeiro, depois a primária curada e
+ * por fim mais seeds. Vale p/ ficha (temporadas) e para a lista por episódio.
+ */
+function sortSourcesPtbrFirst<
+  T extends { title?: string | null; is_primary?: boolean | null; seeds?: number | null },
+>(list: T[]): T[] {
+  return list.sort((a, b) => {
+    const pa = hasPortugueseAudio(a.title ?? '') ? 1 : 0
+    const pb = hasPortugueseAudio(b.title ?? '') ? 1 : 0
+    if (pa !== pb) return pb - pa
+    if (!!a.is_primary !== !!b.is_primary) return a.is_primary ? -1 : 1
+    return (b.seeds ?? 0) - (a.seeds ?? 0)
+  })
+}
+
 // ─── Popularity sort (by primary torrent seeds) ─────────────────────────
 const POPULARITY_SQL = sql<number>`
   COALESCE(
@@ -329,8 +345,15 @@ export const catalogRoutes = new Elysia()
         .where(eq(content_torrents.content_id, id))
         .orderBy(desc(content_torrents.is_primary), desc(torrents.seeds))
 
-      // Add quality to each linked torrent
-      const linkedWithQuality = linked.map((t: any) => ({ ...t, quality: extractQuality(t.title) }))
+      // Add quality to each linked torrent. Ordem das fontes na ficha: áudio
+      // PT-BR primeiro, depois a primária curada, depois mais seeds.
+      const linkedWithQuality = sortSourcesPtbrFirst(
+        linked.map((t: any) => ({
+          ...t,
+          quality: extractQuality(t.title),
+          ptbr_audio: hasPortugueseAudio(t.title ?? ''),
+        })),
+      )
 
       // For series and anime, group torrents by season using coverage classification
       if (content.type === 'series' || content.type === 'anime') {
@@ -377,6 +400,27 @@ export const catalogRoutes = new Elysia()
             unknownSeason.push(t)
           }
         }
+
+        // Pack "COMPLETO" (sem temporada no vínculo, mas com `file_list`) cobre
+        // todas as temporadas da franquia → entra em cada grupo de temporada em
+        // vez de virar uma "Temporada 0" fantasma.
+        const completePacks = unknownSeason.filter(
+          (t: any) => Array.isArray(t.file_list) && t.file_list.length > 0,
+        )
+        if (completePacks.length > 0) {
+          for (const pack of completePacks) {
+            const at = unknownSeason.indexOf(pack)
+            if (at >= 0) unknownSeason.splice(at, 1)
+          }
+          const seasonNumbers = franchise.length > 0
+            ? [...new Set(franchise.map((entry) => entry.season_number))].sort((a, b) => a - b)
+            : [...bySeason.keys()].sort((a, b) => a - b)
+          for (const season of seasonNumbers) {
+            if (!bySeason.has(season)) bySeason.set(season, [])
+            for (const pack of completePacks) bySeason.get(season)!.push(pack as any)
+          }
+        }
+        for (const list of bySeason.values()) sortSourcesPtbrFirst(list)
 
         const seasons = Array.from(bySeason.entries())
           .sort(([a], [b]) => a - b)

@@ -67,6 +67,22 @@ export function buildMagnet(hash: string, name: string): string {
   return `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(name)}${trackers}`
 }
 
+/**
+ * O título declara ÁUDIO em português? Conservador de propósito:
+ * - `Dual Audio` sozinho é EN+JP nos releases anglófonos → NÃO conta;
+ * - `[PT-BR]` em release de legenda (`[Multi-Subs] [JP, EN, ES, PT-BR]`, fansub
+ *   "legendado") também NÃO conta.
+ */
+export function hasPortugueseAudio(title: string): boolean {
+  if (/dublad/i.test(title)) return true
+  const mentionsPt = /pt[-_ ]?br|portugu/i.test(title)
+  if (!mentionsPt) return false
+  if (/multi[-_ ]?dub/i.test(title)) return true
+  if (/multi[-_ ]?audio|dual[-_. ]?audio|\bdual\b/i.test(title)) return true
+  if (/multi[-_ ]?sub|legendad/i.test(title)) return false
+  return false
+}
+
 export function extractHash(magnet: string): string | null {
   const m = magnet.match(/btih:([a-z0-9]+)/i)
   return m ? m[1]!.toLowerCase() : null

@@ -1,10 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { attachEpisodeMetadata } from './episode-metadata'
-import { buildListingIndex, mapProviderEpisodes, type ProviderEpisode } from './episode-providers'
+import type { ProviderEpisode } from './episode-providers'
 import type { EpisodeInfo } from './episodes'
 import type { EpisodeMetadata } from './episode-types'
 import { mergeHttpEpisodeSources } from '../streams/episodes'
+
+// These checks only exercise in-memory mapping and never connect to a database.
+process.env.DATABASE_URL ??= 'postgres://unused:unused@127.0.0.1:5432/unused'
+process.env.TMDB_API_KEY ??= 'unused'
+process.env.OMDb_API_KEY ??= 'unused'
+process.env.JWT_SECRET ??= 'episode-metadata-tests-only-key-0000'
+
+const { attachEpisodeMetadata } = await import('./episode-metadata')
+const { buildListingIndex, mapProviderEpisodes } = await import('./episode-providers')
 
 function metadata(overrides: Partial<EpisodeMetadata> = {}): EpisodeMetadata {
   return {

@@ -5,6 +5,14 @@
 **Domínio:** `popcorntime.fsops.com.br`  
 **Serviço:** `systemd` (`popcorntime-api.service`)
 
+Neste PC, use o alias SSH `hermes`: ele configura o usuário `root` e a chave
+`~/.ssh/main-key`. A conexão pelo IP diretamente não aplica a configuração desse
+alias. Para usar o IP no PowerShell, informe a chave explicitamente:
+
+```powershell
+ssh -i "$env:USERPROFILE\.ssh\main-key" -o IdentitiesOnly=yes root@5.189.130.23
+```
+
 ## Fluxo de deploy (PC → GitHub → VPS)
 
 O código fonte fica no seu PC Windows (`C:\Users\MarceloV2\Code\chq\popcorntime-api`). O deploy segue 3 passos:
@@ -23,19 +31,19 @@ git push
 
 ```powershell
 # Ainda no Windows, via SSH
-ssh root@5.189.130.23 "cd /root/projetos/popcorntime-api && ./deploy.sh"
+ssh hermes "cd /root/projetos/popcorntime-api && ./deploy.sh"
 ```
 
 Ou em 1 linha só (commit + push + deploy):
 
 ```powershell
-cd C:\Users\MarceloV2\Code\chq\popcorntime-api && git add -A && git commit -m "update" && git push && ssh root@5.189.130.23 "cd /root/projetos/popcorntime-api && ./deploy.sh"
+cd C:\Users\MarceloV2\Code\chq\popcorntime-api && git add -A && git commit -m "update" && git push && ssh hermes "cd /root/projetos/popcorntime-api && ./deploy.sh"
 ```
 
 ### 3. Verificar
 
 ```powershell
-ssh root@5.189.130.23 "systemctl status popcorntime-api --no-pager"
+ssh hermes "systemctl status popcorntime-api --no-pager"
 ```
 
 Ou acessar: `https://popcorntime.fsops.com.br/catalog?type=movies`
@@ -82,6 +90,23 @@ O pipeline roda a cada **6 horas** via cron:
 ```cron
 0 */6 * * * cd /root/projetos/popcorntime-api && /root/.bun/bin/bun run src/jobs/pipeline.ts >> /var/log/popcorntime-pipeline.log 2>&1
 ```
+
+## Fontes HTTP de anime
+
+Antes de publicar esta versão, aplique a migração adicional no banco com
+`DATABASE_URL` configurada no `.env` da API. O runner Bun executa a migração
+em uma transação e limita o tempo de espera por locks:
+
+```bash
+bun scripts/migrate-http-streams.ts
+```
+
+Publique a API depois da migração e reconstrua o app para incluir o módulo HLS
+na Android TV e as opções atualizadas do mpv. A coleta HTTP é acionada pelos
+botões de atualizar fontes; o pipeline periódico atual continua com seus jobs
+existentes. A validação opcional `bun scripts/check-http-sources.ts` lê páginas
+HTML/JSON e cabeçalhos HEAD, sem baixar vídeos. Também é possível verificar
+somente a AnimeFire com `bun scripts/check-http-sources.ts "Overgeared" 3 animefire`.
 
 ## Estrutura do projeto
 

@@ -418,3 +418,61 @@ Baixa da fonte, descompacta, converte encoding → UTF-8, converte SRT → WebVT
 | `OPENSUBTITLES_USERNAME` / `_PASSWORD` | não | Login eleva a cota de download (5/dia → 20/dia no free) |
 | `SUBDL_API_KEY` | não | Fonte secundária (subdl.com/panel/api) |
 | `SUBTITLE_LANGS` | não | Idiomas padrão (default `pt-BR,pt-PT,en`) |
+
+## Fontes HTTP para animes
+
+`GET /streams/providers` lista os provedores HTTP disponíveis: `animesdigital`
+(AnimesDigital) e `animefire` (AnimeFire), ambos com versões `dubbed` (dublado)
+e `subbed` (legendado).
+
+As rotas existentes `POST /catalog/:id/refresh` e
+`POST /catalog/:id/episodes/:season/:episode/refresh` também coletam referências
+HTTP de animes. Erros de scraping ou da API de um provedor aparecem em
+`sourceWarnings` sem impedir a coleta dos demais ou apagar fontes já cadastradas.
+
+`GET /catalog/:id/episodes` acrescenta `streams` a cada episódio, preservando
+o campo `torrents`:
+
+```json
+{
+  "season": 1,
+  "episode": 1,
+  "title": "Título do episódio",
+  "torrents": [],
+  "streams": [{
+    "id": 9,
+    "provider": "animesdigital",
+    "title": "Anime Dublado Episódio 1",
+    "season": 1,
+    "episode": 1,
+    "audio_type": "dubbed",
+    "stream_url": null,
+    "quality": null,
+    "collected_at": "2026-10-11T00:00:00Z"
+  }]
+}
+```
+
+`stream_url` começa nulo e é preenchido na primeira resolução. Antes de cada
+reprodução, o app chama `GET /streams/:id/resolve` para obter uma URL atualizada:
+
+```json
+{ "id": 9, "url": "https://cdn.example.com/episode/index.m3u8", "quality": null }
+```
+
+O campo opcional `mimeType` identifica o formato ao player. A AnimeFire devolve
+`"mimeType": "application/vnd.apple.mpegurl"` para seus links HLS com extensão
+`.jpg`; a extensão não deve ser usada como única indicação do formato.
+As versões de áudio são resolvidas separadamente, sem trocar automaticamente
+de dublado para legendado quando uma delas está indisponível. A CDN dessa fonte
+restringe CORS ao próprio site, o que pode impedir sua reprodução na versão web.
+
+Essa resposta é JSON com `Cache-Control: no-store`. O app reproduz `url` direto
+na CDN; a API não faz proxy nem download de mídia. IDs inexistentes retornam
+404; provedor sem URL direta ou indisponível retorna 502. Qualidade nula indica
+que o provedor não informou uma resolução específica; o HLS pode adaptar a
+qualidade no player.
+
+O progresso de uma fonte HTTP usa chave estável `http:<id>`, `magnet: ""`,
+`fileIndex: -1` e os campos opcionais `streamId`/`streamUrl`. Os registros
+existentes de torrents continuam usando os mesmos campos e chaves anteriores.

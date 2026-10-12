@@ -3,7 +3,7 @@
  * For each unscraped torrent, tries to find the file list on LimeTorrents
  * and stores it in the `file_list` JSONB column + extracts quality.
  */
-import { eq, isNull, desc } from 'drizzle-orm'
+import { and, eq, isNull, desc } from 'drizzle-orm'
 import { db } from '../../db'
 import { torrents } from '../../types'
 import { scrapeFileList, extractQualityFromFiles } from '../torrent/scrape-filelist'
@@ -82,7 +82,7 @@ export async function enrichEztvSeeds(limit = 50): Promise<number> {
   const rows = await db
     .select({ id: torrents.id, title: torrents.title, hash: torrents.hash, seeds: torrents.seeds })
     .from(torrents)
-    .where(eq(torrents.source, 'eztv').and(eq(torrents.seeds, 0)))
+    .where(and(eq(torrents.source, 'eztv'), eq(torrents.seeds, 0)))
     .limit(limit)
 
   if (rows.length === 0) return 0

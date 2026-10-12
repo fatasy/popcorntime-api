@@ -117,6 +117,27 @@ export const content_torrents = pgTable(
   (table) => [primaryKey({ columns: [table.content_id, table.torrent_id] })],
 )
 
+// Referências de episódios e URL direta resolvida sob demanda; nunca mídia.
+export const http_streams = pgTable('http_streams', {
+  id: serial('id').primaryKey(),
+  content_id: integer('content_id').notNull().references(() => contents.id, { onDelete: 'cascade' }),
+  season: integer('season').notNull(),
+  episode: integer('episode').notNull(),
+  provider: varchar('provider', { length: 32 }).notNull(),
+  page_url: text('page_url').notNull(),
+  title: varchar('title', { length: 512 }).notNull(),
+  audio_type: varchar('audio_type', { length: 16 }).notNull(),
+  stream_url: text('stream_url'),
+  quality: varchar('quality', { length: 32 }),
+  resolved_at: timestamp('resolved_at', { withTimezone: true }),
+  collected_at: timestamp('collected_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('http_streams_content_episode_page_idx').on(
+    table.content_id, table.season, table.episode, table.provider, table.page_url,
+  ),
+  index('http_streams_episode_idx').on(table.content_id, table.season, table.episode),
+])
+
 export const metadata_cache = pgTable(
   'metadata_cache',
   {
@@ -236,6 +257,8 @@ export const profile_progress = pgTable(
     title: varchar('title', { length: 512 }).notNull(),
     poster: text('poster'),
     magnet: text('magnet').notNull(),
+    stream_id: integer('stream_id'),
+    stream_url: text('stream_url'),
     file_index: integer('file_index').notNull(),
     position: integer('position').notNull(),
     duration: integer('duration').notNull(),

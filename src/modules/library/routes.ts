@@ -24,6 +24,8 @@ function toProgress(row: typeof profile_progress.$inferSelect) {
     title: row.title,
     poster: row.poster ?? null,
     magnet: row.magnet,
+    streamId: row.stream_id ?? undefined,
+    streamUrl: row.stream_url ?? undefined,
     fileIndex: row.file_index,
     position: row.position,
     duration: row.duration,
@@ -56,6 +58,8 @@ const PROGRESS_FIELDS = {
   title: t.String(),
   poster: t.Optional(t.Union([t.String(), t.Null()])),
   magnet: t.String(),
+  streamId: t.Optional(t.Integer({ minimum: 1 })),
+  streamUrl: t.Optional(t.String()),
   fileIndex: t.Number(),
   position: t.Number(),
   duration: t.Number(),
@@ -72,6 +76,8 @@ type ProgressInput = {
   title: string
   poster?: string | null
   magnet: string
+  streamId?: number
+  streamUrl?: string
   fileIndex: number
   position: number
   duration: number
@@ -91,6 +97,8 @@ function progressValues(profileId: number, cwKey: string, item: ProgressInput) {
     title: item.title,
     poster: item.poster ?? null,
     magnet: item.magnet,
+    stream_id: item.streamId ?? null,
+    stream_url: item.streamUrl ?? null,
     file_index: item.fileIndex,
     position: Math.round(item.position),
     duration: Math.round(item.duration),
@@ -109,6 +117,8 @@ const progressConflict = {
     title: sql`excluded.title`,
     poster: sql`excluded.poster`,
     magnet: sql`excluded.magnet`,
+    stream_id: sql`excluded.stream_id`,
+    stream_url: sql`excluded.stream_url`,
     file_index: sql`excluded.file_index`,
     position: sql`excluded.position`,
     duration: sql`excluded.duration`,

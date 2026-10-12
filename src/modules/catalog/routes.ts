@@ -27,6 +27,7 @@ import { refreshCatalogContent, type CatalogRefreshResult, type RefreshScope } f
 import { resolveCanonicalContentId } from '../anime/franchise'
 import { fillGaps } from '../collection/fill-gaps'
 import { importExternalCatalog, searchExternalCatalog } from './external'
+import { countHttpEpisodeSources, refreshAnimeHttpSources } from '../streams/service'
 
 // Evita que dois cliques (ou dois dispositivos) disparem o mesmo crawler em
 // paralelo para um título. Todos aguardam a execução já em curso.
@@ -38,6 +39,7 @@ interface EpisodeSourceRefreshResult {
   episode: number
   sourcesFound: number
   sourcesAdded: number
+  sourceWarnings: string[]
   refreshedAt: string
 }
 
@@ -62,7 +64,7 @@ async function countEpisodeSources(contentId: number, season: number, episode: n
         or(eq(content_torrents.episode, episode), isNull(content_torrents.episode)),
       ),
     )
-  return row?.value ?? 0
+  return (row?.value ?? 0) + await countHttpEpisodeSources(contentId, season, episode)
 }
 
 function refreshEpisodeSourcesOnce(
@@ -76,6 +78,7 @@ function refreshEpisodeSourcesOnce(
 
   const task = (async () => {
     const before = await countEpisodeSources(contentId, season, episode)
+    const http = await refreshAnimeHttpSources(contentId, { season, episode })
     await fillGaps(1, {
       contentId,
       maxEpisodesPerContent: 1,
@@ -88,6 +91,7 @@ function refreshEpisodeSourcesOnce(
       episode,
       sourcesFound: after,
       sourcesAdded: Math.max(0, after - before),
+      sourceWarnings: http.sourceWarnings,
       refreshedAt: new Date().toISOString(),
     }
   })().finally(() => activeEpisodeRefreshes.delete(key))
@@ -550,7 +554,7 @@ export const catalogRoutes = new Elysia()
         episode: t.String(),
       }),
       detail: {
-        summary: 'Refresh torrent sources for one episode',
+        summary: 'Refresh torrent and HTTP sources for one episode',
         tags: ['catalog'],
       },
     },

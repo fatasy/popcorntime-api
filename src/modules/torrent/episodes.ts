@@ -1,6 +1,7 @@
 import { and, eq, gt, sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { anime_franchise_entries, contents, content_torrents, torrents, torrent_episodes, metadata_cache } from '../../types'
+import { anime_franchise_entries, contents, content_torrents, torrents, torrent_episodes, metadata_cache, http_streams } from '../../types'
+import { mergeHttpEpisodeSources, type HttpEpisodeSource } from '../streams/episodes'
 import { getTV, getSeasonEpisodes } from '../enrichment/tmdb'
 import { getAnimeEpisodes, type JikanEpisode } from '../enrichment/myanimelist'
 import * as aniskip from '../enrichment/aniskip'
@@ -43,6 +44,7 @@ export interface EpisodeInfo {
   title: string | null
   air_date: string | null
   torrents: EpisodeTorrent[]
+  streams?: HttpEpisodeSource[]
   markers?: EpisodeMarkers | null
   filler?: boolean | null
   recap?: boolean | null
@@ -146,6 +148,11 @@ export async function resolveEpisodes(
   // mesclados pelo número do episódio.
   if (!content.tmdb_id && content.mal_id) {
     episodes = await mergeJikanCatalog(contentId, content.mal_id, episodes, !!options.forceExternal)
+  }
+
+  if (content.type === 'anime') {
+    const streams = await db.select().from(http_streams).where(eq(http_streams.content_id, contentId))
+    episodes = mergeHttpEpisodeSources(episodes, streams)
   }
 
   // 4. Best-effort: anexa marcadores de abertura/créditos via AniSkip (anime com

@@ -1,6 +1,6 @@
 import { and, eq, gt } from 'drizzle-orm'
 import { db } from '../../db'
-import { anime_franchise_entries, contents, content_torrents, metadata_cache } from '../../types'
+import { anime_franchise_entries, contents, content_torrents, metadata_cache, http_streams } from '../../types'
 import { getAnime, getAnimeAiredEpisodeCount } from '../enrichment/myanimelist'
 
 const BASE = 'https://api.themoviedb.org/3'
@@ -194,6 +194,8 @@ async function detectAnimeGaps(content: {
   mal_id: number | null
   title: string | null
 }, force = false): Promise<GapResult> {
+  const httpEpisodes = await db.select({ season: http_streams.season, episode: http_streams.episode })
+    .from(http_streams).where(eq(http_streams.content_id, content.id))
   const franchise = await db
     .select()
     .from(anime_franchise_entries)
@@ -205,7 +207,7 @@ async function detectAnimeGaps(content: {
       .from(content_torrents)
       .where(eq(content_torrents.content_id, content.id))
     const existing = new Set(
-      existingRows
+      [...existingRows, ...httpEpisodes]
         .filter((row) => row.season != null && row.episode != null)
         .map((row) => `${row.season}|${row.episode}`),
     )
@@ -322,7 +324,7 @@ async function detectAnimeGaps(content: {
     .from(content_torrents)
     .where(eq(content_torrents.content_id, content.id))
   const existing = new Set(
-    existingRows.filter((r): r is { episode: number } => r.episode != null).map((r) => r.episode),
+    [...existingRows, ...httpEpisodes].filter((r): r is { episode: number } => r.episode != null).map((r) => r.episode),
   )
 
   // Dominant existing season (default 1) — new eps go under it.
@@ -465,8 +467,14 @@ export async function detectGaps(
         and(eq(content_torrents.content_id, contentId), eq(content_torrents.season, seasonNum)),
       )
 
+    const httpEpisodes = content.type === 'anime'
+      ? await db.select({ episode: http_streams.episode }).from(http_streams).where(and(
+          eq(http_streams.content_id, contentId), eq(http_streams.season, seasonNum),
+        ))
+      : []
+
     const existingEpisodes = new Set(
-      existingRows.filter((r): r is { episode: number } => r.episode != null).map((r) => r.episode),
+      [...existingRows, ...httpEpisodes].filter((r): r is { episode: number } => r.episode != null).map((r) => r.episode),
     )
 
     // c. Compare: expected episode numbers vs what we have

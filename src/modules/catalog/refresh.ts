@@ -7,6 +7,7 @@ import { refreshMovieSources } from '../collection/refresh-movie-sources'
 import { enrichContent } from '../enrichment'
 import { resolveEpisodes } from '../torrent/episodes'
 import { consolidateAnimeFranchise, resolveCanonicalContentId } from '../anime/franchise'
+import { refreshAnimeHttpSources } from '../streams/service'
 
 export type RefreshScope = 'all' | 'metadata' | 'sources'
 
@@ -16,6 +17,7 @@ export interface CatalogRefreshResult {
   metadataUpdated: boolean
   sourcesFound: number
   sourcesAdded: number
+  sourceWarnings: string[]
   episodesCataloged: number
   remainingEpisodes: number
   refreshedAt: string
@@ -54,6 +56,7 @@ export async function refreshCatalogContent(
 
   let sourcesFound = 0
   let sourcesAdded = 0
+  let sourceWarnings: string[] = []
   let episodesCataloged = 0
   let remainingEpisodes = 0
 
@@ -65,6 +68,11 @@ export async function refreshCatalogContent(
 
   if (content.type === 'series' || content.type === 'anime') {
     if (scope !== 'metadata') {
+      if (content.type === 'anime') {
+        const http = await refreshAnimeHttpSources(canonicalId)
+        sourcesAdded += http.sourcesAdded
+        sourceWarnings.push(...http.sourceWarnings)
+      }
       const filled = await fillGaps(1, {
         contentId: canonicalId,
         forceCatalog: true,
@@ -72,12 +80,12 @@ export async function refreshCatalogContent(
         // limitada para séries muito longas. A resposta informa o restante.
         maxEpisodesPerContent: 48,
       })
-      sourcesAdded = filled[0]?.torrentsAdded ?? 0
+      sourcesAdded += filled[0]?.torrentsAdded ?? 0
     }
 
     const episodes = await resolveEpisodes(canonicalId, { forceExternal: scope !== 'sources' })
     episodesCataloged = episodes.filter((episode) => episode.episode > 0).length
-    sourcesFound = episodes.reduce((total, episode) => total + episode.torrents.length, 0)
+    sourcesFound = episodes.reduce((total, episode) => total + episode.torrents.length + (episode.streams?.length ?? 0), 0)
 
     try {
       const gaps = await detectGaps(canonicalId)
@@ -98,6 +106,7 @@ export async function refreshCatalogContent(
     metadataUpdated,
     sourcesFound,
     sourcesAdded,
+    sourceWarnings,
     episodesCataloged,
     remainingEpisodes,
     refreshedAt: new Date().toISOString(),

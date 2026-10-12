@@ -56,6 +56,9 @@ export interface JikanAnimeFull extends JikanAnime {
 
 export interface JikanEpisode {
   mal_id: number
+  url?: string | null
+  score?: number | null
+  forum_url?: string | null
   title?: string | null
   title_romanji?: string | null
   title_japanese?: string | null
@@ -364,6 +367,8 @@ export async function getAnimeFull(id: number): Promise<JikanAnimeFull | null> {
 
 // ─── Aired-episode count (for ongoing anime gap detection) ──────────────────
 
+const JIKAN_DELAY_MS = 350 // limite público do Jikan: ~3 req/s
+
 function maxEpisodeNumber(list?: { episode?: number }[]): number {
   let m = 0
   for (const e of list ?? []) {
@@ -391,7 +396,7 @@ export async function getAnimeAiredEpisodeCount(id: number): Promise<number | nu
     let max = maxEpisodeNumber(j1.data)
     const lastPage = j1.pagination?.last_visible_page ?? 1
     if (j1.pagination?.has_next_page && lastPage > 1) {
-      await new Promise((r) => setTimeout(r, 350)) // Jikan rate limit
+      await new Promise((r) => setTimeout(r, JIKAN_DELAY_MS)) // Jikan rate limit
       const last = await fetch(`${BASE}/anime/${id}/episodes?page=${lastPage}`, {
         signal: AbortSignal.timeout(15_000),
       })
@@ -411,13 +416,13 @@ export async function getAnimeAiredEpisodeCount(id: number): Promise<number | nu
  * Catálogo completo de episódios de um anime. É usado na atualização manual
  * para que a tela mostre também episódios ainda sem torrent disponível.
  */
-export async function getAnimeEpisodes(id: number): Promise<JikanEpisode[]> {
+export async function getAnimeEpisodes(id: number, maxPages = 100): Promise<JikanEpisode[]> {
   const episodes: JikanEpisode[] = []
   let page = 1
   if (jikanIsDown()) return episodes
 
   try {
-    while (page <= 100) {
+    while (page <= Math.min(100, maxPages)) {
       const res = await fetch(`${BASE}/anime/${id}/episodes?page=${page}`, {
         signal: AbortSignal.timeout(15_000),
       })
@@ -463,7 +468,25 @@ export async function getSeasonNow(): Promise<JikanAnime[]> {
   }
 }
 
-/** Top airing anime. */
+/**
+ * Ranking de animes EM EXIBIÇÃO (`/top/anime?filter=airing`), na ordem do MAL.
+ * ATENÇÃO: NÃO é um ranking diário — é o ranking de popularidade/nota dos animes
+ * atualmente no ar, por isso a faixa do app se chama "Animes em exibição".
+ * LANÇA em falha de HTTP (diferente de `getTopAiring`, que devolve [] e serve o
+ * job de descoberta): a faixa precisa distinguir "Jikan fora do ar" de "vazio".
+ */
+export async function getTopAiringRanking(limit = 25): Promise<JikanAnime[]> {
+  const url = new URL(BASE + '/top/anime')
+  url.searchParams.set('filter', 'airing')
+  url.searchParams.set('limit', String(limit))
+  url.searchParams.set('sfw', 'true')
+  const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+  if (!res.ok) throw new Error(`Jikan top/anime HTTP ${res.status}`)
+  const data = (await res.json()) as { data?: JikanAnime[] }
+  return data.data ?? []
+}
+
+/** Top airing anime (tolerante a falha: devolve []). */
 export async function getTopAiring(limit = 25): Promise<JikanAnime[]> {
   try {
     const url = new URL(BASE + '/top/anime')

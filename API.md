@@ -18,6 +18,8 @@
 | `type` | `movie\|series\|anime` | — | Filtrar por tipo |
 | `genre` | string | — | Filtrar por gênero (ex: `"Animação"`) |
 | `year` | number | — | Filtrar por ano |
+| `tmdb_id` | number | — | **Lookup exato** pelo ID do TMDB (use com `type=movie\|series`) |
+| `mal_id` | number | — | **Lookup exato** pelo ID do MAL (use com `type=anime`) |
 | `sort` | `popular\|rating\|year\|title\|created_at\|updated_at` | `created_at` | Ordenação. `popular` = por seeds |
 | `order` | `asc\|desc` | `desc` | Direção da ordenação |
 | `enriched` | `"true"\|"1"` | — | Só conteúdo com metadados (poster, sinopse) |
@@ -68,6 +70,30 @@
 ```
 
 **Campos podem ser `null` se o conteúdo não foi enriquecido.** Sempre verifique `enriched_at` antes de assumir que metadados existem.
+
+**Lookup por ID externo (clique de um item do `/trending`):** o `/trending`
+devolve a lista externa completa (sem filtrar pelo catálogo interno), então o
+clique precisa de um lookup exato e barato — sempre com `limit=1`:
+
+```
+GET /catalog?type=movie&tmdb_id=1607127&limit=1     # filmes e séries (TMDB)
+GET /catalog?type=series&tmdb_id=95350&limit=1
+GET /catalog?type=anime&mal_id=60059&limit=1        # anime (Jikan/MAL)
+```
+
+Envie o `type` junto: os IDs do TMDB de filme e de série são espaços distintos
+(o id 95350 pode existir em ambos). Três resultados possíveis:
+
+| Resposta | Significado | O que o app faz |
+|---|---|---|
+| `data: [ { ...conteúdo, "primary": {...} } ]` | Registro local **com** fonte primária | Abrir o detalhe/player interno normalmente |
+| `data: [ { ...conteúdo, "primary": null } ]` | Registro local existe, mas **sem torrent primário** | Abrir o detalhe interno e sinalizar "sem fonte de reprodução" |
+| `data: []` (`meta.total: 0`) | **Sem registro local** | Manter o detalhe externo (título/ano/poster do `/trending`) com estado "sem fonte" |
+
+Este lookup é aditivo: sem `tmdb_id`/`mal_id` o `/catalog` se comporta
+exatamente como antes. Ele **não é mais necessário** para a faixa `/trending`
+(que já devolve o `id` interno de cada item), mas continua disponível para quando
+o app tiver apenas o ID externo em mãos.
 
 ---
 
@@ -160,6 +186,20 @@
           "episode": 1,
           "title": "Piloto",
           "air_date": "2009-09-10",
+          "overview": "A vida de Elena muda depois que Stefan chega à cidade.",
+          "still_url": "https://image.tmdb.org/t/p/w300/abc123.jpg",
+          "thumbnail_url": "https://image.tmdb.org/t/p/w300/abc123.jpg",
+          "image_kind": "still",
+          "image_source": "tmdb",
+          "image_match": "tmdb",
+          "image_credit": "TMDB",
+          "image_credit_url": "https://www.themoviedb.org",
+          "image_license": null,
+          "runtime_sec": 2520,
+          "filler": null,
+          "recap": null,
+          "metadata_source": "tmdb",
+          "markers": { "intro": { "start": 12.5, "end": 42 }, "credits": { "start": 1380 }, "runtime_sec": 2520, "source": "mixed" },
           "torrents": [
             {
               "hash": "6ea2ed05...",
@@ -167,7 +207,10 @@
               "title": "The Vampire Diaries Season 1 2 3 4 5 6 7 8 - threesixtyp",
               "seeds": 45,
               "file_index": 0,
-              "inferred": false
+              "inferred": false,
+              "quality": "1080p",
+              "size_bytes": 1234567890,
+              "collected_at": "2026-09-01T12:00:00.000Z"
             }
           ]
         }
@@ -224,6 +267,111 @@ válidas para o seletor; séries/animes informam quantos episódios ainda ficara
   "meta": { "page": 1, "limit": 20, "total": 3 }
 }
 ```
+
+---
+
+### 5. `GET /trending` — Faixa diária "em alta" (ranking externo SINCRONIZADO)
+
+Faixas com a lista **completa do provedor**, na **ordem original do ranking**,
+sincronizadas com o catálogo interno **uma vez por dia**. Contrato por faixa:
+**`{ title, source, type, data }`** (+ auxiliares). Cada item traz o **id interno**
+do registro em `contents` (para abrir `/catalog/:id`) além dos IDs externos.
+
+| `?type` | Fonte da ordem | `title` retornado |
+|---|---|---|
+| `movie` | TMDB `/trending/movie/day` | `Em alta hoje` |
+| `series` | TMDB `/trending/tv/day` | `Em alta hoje` |
+| `anime` | Jikan `/top/anime?filter=airing` | `Animes em exibição` |
+| `all` (default) | as três acima | — (retorna `groups`) |
+
+> Anime **não tem ranking diário**: o Jikan publica o ranking dos títulos **em
+> exibição**. Por isso o título é `Animes em exibição` — não chame de "hoje".
+
+**Query params:** `type` (`movie`|`series`|`anime`|`all`, default `all`; aceita plural) · `limit` (default 10, máx 20)
+
+**Ciclo de atualização (1x/dia, preguiçoso):** no primeiro pedido após 24h o
+servidor (1) busca a lista do provedor, (2) casa/cria o registro em `contents`
+para cada item e (3) grava a lista **com os ids internos** no cache. Enquanto o
+cache vale, nenhuma chamada externa acontece. Se o provedor falhar, o último
+ranking válido é servido (`cache.stale: true`) — **já com os ids internos** — e
+o app não percebe diferença. A coleta de torrents continua com o pipeline/coletor:
+**nada** é coletado dentro do GET.
+
+**Response (200) — `?type=movie`:**
+
+```json
+{
+  "title": "Em alta hoje",
+  "source": "tmdb",
+  "type": "movie",
+  "data": [
+    {
+      "rank": 1,
+      "id": 4186,
+      "type": "movie",
+      "source": "tmdb",
+      "tmdb_id": 1607127,
+      "mal_id": null,
+      "title": "O Último Tiro Certo",
+      "original_title": "One Last Shot",
+      "year": 2026,
+      "release_date": "2026-09-22",
+      "poster_url": "https://image.tmdb.org/t/p/w500/owdiTFWuWq4UxPth6nXNsO6x74Q.jpg",
+      "backdrop_url": "https://image.tmdb.org/t/p/w780/8giIQcHpxgsPVP6c7aQtHl3txuh.jpg",
+      "overview": "Sinopse em pt-BR vinda do TMDB...",
+      "rating": 8.375,
+      "source_url": "https://www.themoviedb.org/movie/1607127",
+      "primary": null
+    }
+  ],
+  "source_list": "trending/movie/day",
+  "source_url": "https://www.themoviedb.org",
+  "ranking_window": "day",
+  "available": true,
+  "error": null,
+  "notice": "Lista sincronizada com o catálogo interno: use `id` para abrir /catalog/:id. `primary: null` = ainda sem fonte de reprodução (o pipeline de torrents preenche depois) — não oculte o item, mostre o estado \"sem fonte\".",
+  "limit": 10,
+  "total": 10,
+  "provider_total": 39,
+  "cache": { "hit": true, "stale": false, "age_seconds": 43200, "ttl_seconds": 86400, "fetched_at": "2026-09-22T03:00:00.000Z" },
+  "generated_at": "2026-09-22T15:00:00.000Z"
+}
+```
+
+Com `?type=all` (ou sem `type`): `{ "generated_at": ..., "limit": 10, "groups": [ {...movie}, {...series}, {...anime} ] }`.
+
+**Regras do contrato:**
+
+1. `data` é a lista do provedor cortada apenas pelo `limit`, **na ordem do
+   ranking**; `rank` é a posição original (1 = primeiro). Nada é removido por não
+   ter torrent ou vínculo prévio — as posições são contínuas (1..N).
+2. `id` = **id interno** em `contents` (use em `/catalog/:id`). `null` apenas se
+   a sincronização daquele item falhou (ex.: banco indisponível) — o item
+   continua na lista com os metadados externos.
+3. `primary` = torrent primário **atual** (mesmo shape do `/catalog`:
+   `torrent_id`, `title`, `seeds`, `leechers`, `size_bytes`, `magnet_link`,
+   `source`, `quality`). `primary: null` = **sem fonte de reprodução ainda**:
+   mantenha o item, abra o detalhe e mostre o estado "sem fonte". O coletor de
+   torrents preenche isso depois (o GET não coleta nada).
+4. `tmdb_id` (filmes/séries) e `mal_id` (anime) são os IDs EXTERNOS; `poster_url`,
+   `backdrop_url`, `overview`, `rating`, `year`, `release_date` vêm do provedor.
+5. `notice` documenta a limitação acima (item sem fonte continua na lista).
+6. `cache.ttl_seconds = 86400` (1 dia); `cache.hit: true` = servido do cache
+   persistido; `cache.stale: true` = o refresh falhou e estamos servindo o
+   ranking anterior (com os ids internos). Após falha, o servidor re-tenta em 5 min.
+7. `available: false` (+ `error`) = provedor indisponível e **nenhum** ranking
+   anterior persistido: oculte a faixa.
+8. **Use o `title` da resposta** — não codifique nome de faixa no app.
+
+**O que a sincronização faz (por item, sem duplicar):**
+
+| Passo | Critério | Ação |
+|---|---|---|
+| 1 | `type` + ID externo (`tmdb_id`/`mal_id`) já existe | Completa os metadados do registro (título, ano, IDs, poster/backdrop, `rating`; `synopsis` só se estiver vazia) |
+| 2 | `type` + título **exato** + ano, em registro **sem** ID externo | Vincula o ID externo ao registro existente |
+| 3 | nenhum dos dois | Cria o registro com `enriched_at = null` (o pipeline completa gênero/elenco/sinopse e o coletor vincula torrents) |
+
+**Response (400):** `{ "error": "Unknown type \"...\". Use movie | series | anime | all" }`
 
 ---
 
@@ -300,6 +448,34 @@ para a lista de cada episódio e para `seasons[].torrents` no detalhe. `file_ind
 do nome dos arquivos (`file_list`) quando disponível — packs não vêm necessariamente em
 ordem de episódio — e só cai no índice posicional sem `file_list`.
 
+### Arte por episódio (miniaturas)
+
+Campos aditivos do endpoint de episódios. **`image_kind` é o contrato estável** —
+nunca deduza o tipo de arte pela presença de URL:
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `image_kind` | `"still" \| "fallback" \| "none"` | `still` = arte DESTE episódio · `fallback` = poster/backdrop do conteúdo (NÃO é still do episódio) · `none` = sem imagem, usar placeholder local |
+| `still_url` | `string \| null` | URL da arte real do episódio (só quando `image_kind = "still"`) |
+| `thumbnail_url` | `string \| null` | Pronto para exibir: o still quando existe, senão a arte do conteúdo; `null` quando `image_kind = "none"` |
+| `image_source` | `"tmdb" \| "tvmaze" \| "thetvdb" \| null` | Fonte da arte |
+| `image_match` | `"tmdb" \| "imdb" \| "thetvdb" \| "title" \| null` | Como a fonte foi vinculada ao conteúdo (auditoria; `title` só ocorre em anime, com guardas estritas de nome/ano/idioma) |
+| `image_credit` / `image_credit_url` / `image_license` | `string \| null` | Atribuição exigida pela fonte |
+
+**Regra de UI:** use `thumbnail_url` como miniatura do episódio; quando
+`image_kind = "none"` (ou `thumbnail_url = null`) mostre o placeholder local.
+Se `image_kind = "still"`, exiba `image_credit` com link para `image_credit_url`
+(TVmaze é CC BY-SA; TMDB e TheTVDB também exigem atribuição). Nunca apresente
+`image_kind = "fallback"` como se fosse o still do episódio.
+
+Episódios de "pacote" (temporada/episódio `0`, quando a listagem não conseguiu
+separar os arquivos) normalmente vêm com `image_kind = "fallback"`.
+
+O metadado é resolvido no servidor e persistido por até 24h (tabela
+`episode_metadata`); a primeira chamada de um conteúdo pode ser mais lenta
+(consulta às fontes externas) e é retomada automaticamente se alguma fonte
+falhar.
+
 ---
 
 ## Fluxo típico do frontend
@@ -309,6 +485,21 @@ ordem de episódio — e só cai no índice posicional sem `file_list`.
 GET /catalog?sort=popular&enriched=true&limit=20
 → Mostra grid de posters com título, rating, tipo
 → Paginação: ?page=2
+```
+
+### Tela inicial — faixa diária "em alta" (ranking externo sincronizado)
+```
+GET /trending?type=all&limit=10
+→ 3 grupos, cada um { title, source, type, data } com o título vindo da API:
+   "Em alta hoje" (filmes), "Em alta hoje" (séries), "Animes em exibição"
+→ Ordem = ranking externo (TMDB trending/day; Jikan top airing), lista completa
+→ Servidor sincroniza o ranking com o catálogo 1x/dia; nada a fazer no app
+→ Card: title, year, poster_url, type
+→ Clique: abrir /catalog/<id> (id interno vem no item)
+   · primary = {...}  -> há fonte de reprodução
+   · primary = null   -> abrir o detalhe e mostrar "sem fonte" (item NÃO sai da faixa)
+   · id = null        -> sem registro local: manter o detalhe externo com "sem fonte"
+→ Faixa com available=false (ou data vazio) deve ser ocultada
 ```
 
 ### Tela de busca
@@ -427,6 +618,8 @@ Baixa da fonte, descompacta, converte encoding → UTF-8, converte SRT → WebVT
 | `OPENSUBTITLES_USERNAME` / `_PASSWORD` | não | Login eleva a cota de download (5/dia → 20/dia no free) |
 | `SUBDL_API_KEY` | não | Fonte secundária (subdl.com/panel/api) |
 | `SUBTITLE_LANGS` | não | Idiomas padrão (default `pt-BR,pt-PT,en`) |
+| `THETVDB_API_KEY` | não | Arte por episódio de anime via TheTVDB v4 (sem a chave o provedor fica inativo; exige atribuição e licença própria) |
+
 
 ## Fontes HTTP para animes
 

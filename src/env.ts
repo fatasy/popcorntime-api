@@ -18,6 +18,13 @@ const envSchema = z.object({
   // Idiomas padrão da busca (canônicos), em ordem de preferência
   SUBTITLE_LANGS: z.string().default('pt-BR,pt-PT,en'),
 
+  // ─── Arte por episódio (provedores de imagem) ───
+  // TheTVDB v4: arte por episódio + numeração absoluta (usado em anime).
+  // Sem a chave o provedor fica INATIVO (TMDB e TVMaze continuam cobrindo).
+  // Licença: grátis p/ receita < US$50k/ano COM atribuição e link direto
+  // (thetvdb.com/api-information); revisar termos antes de ligar em produção.
+  THETVDB_API_KEY: z.string().min(1).optional(),
+
   // ─── Auth (contas + perfis) ───
   // Segredo de assinatura do JWT (gere com: openssl rand -hex 32). Boot falha sem ele.
   JWT_SECRET: z.string().min(32),

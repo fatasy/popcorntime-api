@@ -6,6 +6,11 @@ import { getTV, getSeasonEpisodes } from '../enrichment/tmdb'
 import { getAnimeEpisodes, type JikanEpisode } from '../enrichment/myanimelist'
 import * as aniskip from '../enrichment/aniskip'
 import { parseRelease, hasPortugueseAudio } from '../../lib/parse'
+import {
+  resolveEpisodeMetadata,
+  type TmdbEpisodeRecord,
+  type EpisodeMetadataContext,
+} from './episode-metadata'
 import { classifySeasonCoverage, type SeasonCoverage } from './season-coverage'
 import { extractQualityLabel } from './quality'
 
@@ -48,9 +53,71 @@ export interface EpisodeInfo {
   torrents: EpisodeTorrent[]
   streams?: HttpEpisodeSource[]
   markers?: EpisodeMarkers | null
+  // ─── Metadado externo por episódio (persistido em `episode_metadata`) ───
+  // Fontes: TMDB (título pt-BR/sinopse/still), Jikan-MAL (título/data/filler),
+  // TVMaze (imagem horizontal por episódio) e TheTVDB (arte, opcional).
+  overview?: string | null
+  /** Still REAL deste episódio, quando alguma fonte tem arte por episódio. */
+  still_url?: string | null
+  /** Miniatura para o app: o still quando existe, senão a arte do conteúdo. */
+  thumbnail_url?: string | null
+  /**
+   * Estado da imagem — contrato estável:
+   *  - `still`    → `still_url` é a arte DESTE episódio (`image_source` diz de quem)
+   *  - `fallback` → não há still; `thumbnail_url` é o poster/backdrop do conteúdo
+   *  - `none`     → nenhuma imagem; o app deve usar o placeholder local
+   */
+  image_kind?: 'still' | 'fallback' | 'none'
+  image_source?: 'tmdb' | 'tvmaze' | 'thetvdb' | null
+  /** Como o provedor foi vinculado ao conteúdo (auditoria; 'title' só em anime). */
+  image_match?: 'tmdb' | 'imdb' | 'thetvdb' | 'title' | null
+  /** Atribuição exigida pela fonte da imagem (ex.: TVmaze, CC BY-SA). */
+  image_credit?: string | null
+  image_credit_url?: string | null
+  image_license?: string | null
+  runtime_sec?: number | null
   filler?: boolean | null
   recap?: boolean | null
-  metadata_source?: 'tmdb' | 'jikan' | null
+  metadata_source?: 'tmdb' | 'jikan' | 'tvmaze' | 'thetvdb' | null
+}
+
+/**
+ * Campos de metadado/arte antes de qualquer provedor responder. A miniatura já
+ * sai com a arte do conteúdo (backdrop/poster) marcada como `image_kind:
+ * 'fallback'` — nunca como still do episódio; sem arte alguma, `image_kind`
+ * fica 'none' e o app usa o placeholder local.
+ */
+function emptyEpisodeMetadata(fallbackArt: string | null): Pick<
+  EpisodeInfo,
+  | 'overview'
+  | 'still_url'
+  | 'thumbnail_url'
+  | 'image_kind'
+  | 'image_source'
+  | 'image_match'
+  | 'image_credit'
+  | 'image_credit_url'
+  | 'image_license'
+  | 'runtime_sec'
+  | 'filler'
+  | 'recap'
+  | 'metadata_source'
+> {
+  return {
+    overview: null,
+    still_url: null,
+    thumbnail_url: fallbackArt,
+    image_kind: fallbackArt ? 'fallback' : 'none',
+    image_source: null,
+    image_match: null,
+    image_credit: null,
+    image_credit_url: null,
+    image_license: null,
+    runtime_sec: null,
+    filler: null,
+    recap: null,
+    metadata_source: null,
+  }
 }
 
 interface LinkedTorrent {
@@ -210,7 +277,17 @@ export async function resolveEpisodes(
 ): Promise<EpisodeInfo[]> {
   // 1. Load content
   const [content] = await db
-    .select({ type: contents.type, tmdb_id: contents.tmdb_id, mal_id: contents.mal_id, title: contents.title })
+    .select({
+      type: contents.type,
+      tmdb_id: contents.tmdb_id,
+      mal_id: contents.mal_id,
+      title: contents.title,
+      original_title: contents.original_title,
+      year: contents.year,
+      imdb_id: contents.imdb_id,
+      poster_url: contents.poster_url,
+      backdrop_url: contents.backdrop_url,
+    })
     .from(contents)
     .where(eq(contents.id, contentId))
     .limit(1)
@@ -245,34 +322,65 @@ export async function resolveEpisodes(
   for (const t of linked) {
     linkMeta.set(t.hash, { fileList: t.file_list ?? null, season: t.season })
   }
+  // Arte de fallback das miniaturas (backdrop 16:9 preferido; senão o poster).
+  // Usada apenas quando NENHUMA fonte tem still do episódio — e sempre marcada
+  // como `image_kind: 'fallback'`, nunca como still.
+  const fallbackArt = content.backdrop_url ?? content.poster_url ?? null
 
   // 3. Resolve episodes (TMDB first, heuristic fallback)
   let episodes: EpisodeInfo[]
+  let tmdbRecords: TmdbEpisodeRecord[] | undefined
+  // imdb_id do TMDB (`append_to_response=external_ids`): permite vincular o
+  // TVMaze por id externo mesmo quando `contents.imdb_id` está vazio.
+  let externalImdbId: string | null = null
   if (content.tmdb_id) {
     try {
-      episodes = await resolveWithTmdb(contentId, content.tmdb_id, linked)
+      const resolved = await resolveWithTmdb(contentId, content.tmdb_id, linked, fallbackArt)
+      episodes = resolved.episodes
+      tmdbRecords = resolved.tmdbRecords
+      externalImdbId = resolved.externalImdbId
     } catch (err) {
       console.warn(
         `[episodes] TMDB resolution failed for content ${contentId} (tmdb:${content.tmdb_id}):`,
         (err as Error).message,
       )
-      episodes = resolveHeuristic(linked)
+      episodes = resolveHeuristic(linked, fallbackArt)
     }
   } else {
-    episodes = resolveHeuristic(linked)
+    episodes = resolveHeuristic(linked, fallbackArt)
   }
 
   // Anime sem TMDB ainda precisa exibir o catálogo externo inteiro, inclusive
   // episódios sem fonte. Jikan fornece a lista; os torrents já resolvidos são
   // mesclados pelo número do episódio.
   if (!content.tmdb_id && content.mal_id) {
-    episodes = await mergeJikanCatalog(contentId, content.mal_id, episodes, !!options.forceExternal, linkMeta)
+    episodes = await mergeJikanCatalog(contentId, content.mal_id, episodes, !!options.forceExternal, linkMeta, fallbackArt)
   }
 
   if (content.type === 'anime') {
     const streams = await db.select().from(http_streams).where(eq(http_streams.content_id, contentId))
     episodes = mergeHttpEpisodeSources(episodes, streams)
   }
+  // Fontes HTTP podem acrescentar episódios fora do catálogo externo.
+  episodes = episodes.map((episode) => ({ ...emptyEpisodeMetadata(fallbackArt), ...episode }))
+
+  // 3b. Metadado externo por episódio (título/sinopse/data + still/thumbnail),
+  //     persistido em `episode_metadata`. Para anime keyed por mal_id esta é a
+  //     única fonte de título/imagem (o fallback heurístico não tinha nenhuma).
+  const metaContext: EpisodeMetadataContext = {
+    id: contentId,
+    type: content.type,
+    title: content.title,
+    original_title: content.original_title,
+    year: content.year,
+    tmdb_id: content.tmdb_id,
+    mal_id: content.mal_id,
+    imdb_id: content.imdb_id,
+    external_imdb_id: externalImdbId,
+    poster_url: content.poster_url,
+    backdrop_url: content.backdrop_url,
+  }
+  await resolveEpisodeMetadata(metaContext, episodes, tmdbRecords)
 
   // 4. Best-effort: anexa marcadores de abertura/créditos via AniSkip (anime com
   //    mal_id). Cacheado em metadata_cache; o runtime do TMDB já foi anexado em
@@ -314,14 +422,30 @@ async function resolveWithTmdb(
   contentId: number,
   tmdbId: number,
   linked: LinkedTorrent[],
-): Promise<EpisodeInfo[]> {
+  fallbackArt: string | null,
+): Promise<{
+  episodes: EpisodeInfo[]
+  tmdbRecords: TmdbEpisodeRecord[]
+  externalImdbId: string | null
+}> {
   // Fetch TV details to get season list
   const tv = await getTV(tmdbId)
+
+  // `external_ids` vem no mesmo request (append_to_response): id externo do
+  // IMDb para vincular provedores de arte por id (nunca por nome) em séries.
+  const externalImdbId: string | null = tv?.external_ids?.imdb_id ?? null
 
   // Build a map of (season, episode) → TMDB episode data
   const tmdbEpisodes = new Map<
     string,
-    { title: string | null; air_date: string | null; runtime: number | null }
+    {
+      id: number | null
+      title: string | null
+      air_date: string | null
+      runtime: number | null
+      overview: string | null
+      still_path: string | null
+    }
   >()
 
   // Fetch each season's episode list in parallel
@@ -335,9 +459,12 @@ async function resolveWithTmdb(
         for (const ep of data.episodes ?? []) {
           const key = `${seasonNum}|${ep.episode_number}`
           tmdbEpisodes.set(key, {
+            id: typeof ep.id === 'number' ? ep.id : null,
             title: ep.name ?? null,
             air_date: ep.air_date ?? null,
             runtime: typeof ep.runtime === 'number' ? ep.runtime : null,
+            overview: ep.overview ?? null,
+            still_path: ep.still_path ?? null,
           })
         }
       } catch (err) {
@@ -494,16 +621,33 @@ async function resolveWithTmdb(
         return aIsEztv - bIsEztv
       }),
       markers: runtimeSec ? { runtime_sec: runtimeSec, source: 'tmdb' } : null,
+      ...emptyEpisodeMetadata(fallbackArt),
       metadata_source: 'tmdb',
     })
   }
 
   result.sort((a, b) => a.season - b.season || a.episode - b.episode)
 
+  // Episódios do TMDB já baixados nesta requisição (inclui still/sinopse):
+  // passados para a persistência em `episode_metadata` sem nova chamada à API.
+  const tmdbRecords: TmdbEpisodeRecord[] = Array.from(tmdbEpisodes.entries()).map(([key, e]) => {
+    const [seasonStr, episodeStr] = key.split('|')
+    return {
+      season: parseInt(seasonStr!, 10),
+      episode: parseInt(episodeStr!, 10),
+      source_episode_id: e.id,
+      title: e.title,
+      overview: e.overview,
+      air_date: e.air_date,
+      runtime_sec: e.runtime != null ? e.runtime * 60 : null,
+      still_path: e.still_path,
+    }
+  })
+
   // Cache resolved episodes
   await cacheResults(contentId, result)
 
-  return result
+  return { episodes: result, tmdbRecords, externalImdbId }
 }
 
 // ─── Jikan episode catalog ────────────────────────────────────────────────
@@ -547,6 +691,7 @@ async function mergeJikanCatalog(
   existing: EpisodeInfo[],
   force: boolean,
   linkMeta: Map<string, LinkMeta> = new Map(),
+  fallbackArt: string | null = null,
 ): Promise<EpisodeInfo[]> {
   let franchise = await db
     .select()
@@ -588,6 +733,7 @@ async function mergeJikanCatalog(
           title: null,
           air_date: null,
           torrents: [],
+          ...emptyEpisodeMetadata(fallbackArt),
           metadata_source: 'jikan',
         })
       }
@@ -604,6 +750,8 @@ async function mergeJikanCatalog(
       const key = `${entry.season_number}|${number}`
       const current = byEpisode.get(key)
       byEpisode.set(key, {
+        ...emptyEpisodeMetadata(fallbackArt),
+        ...current,
         season: entry.season_number,
         episode: number,
         title: item.title ?? item.title_romanji ?? current?.title ?? null,
@@ -697,7 +845,7 @@ async function mergeJikanCatalog(
 
 // ─── Strategy B: Heuristic fallback ───────────────────────────────────────
 
-function resolveHeuristic(linked: LinkedTorrent[]): EpisodeInfo[] {
+function resolveHeuristic(linked: LinkedTorrent[], fallbackArt: string | null): EpisodeInfo[] {
   const episodeMap = new Map<string, EpisodeTorrent[]>()
 
   for (const t of linked) {
@@ -741,6 +889,7 @@ function resolveHeuristic(linked: LinkedTorrent[]): EpisodeInfo[] {
         const bIsEztv = b.title?.includes('[EZTV') ? 1 : 0
         return aIsEztv - bIsEztv
       }),
+      ...emptyEpisodeMetadata(fallbackArt),
     })
   }
 

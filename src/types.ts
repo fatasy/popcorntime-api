@@ -168,6 +168,45 @@ export const torrent_episodes = pgTable(
   ],
 )
 
+// Metadados externos por episódio (TMDB/Jikan/TVMaze/TheTVDB) + arte do episódio.
+// Criada por migrations/007_episode_metadata.sql. Substitui a resolução
+// "em memória a cada request" que só existia para conteúdo com tmdb_id:
+// animes keyed por mal_id passam a ter título/data/imagem persistidos.
+// `image_kind` é o contrato estável para o app: 'still' (arte DESTE episódio),
+// 'fallback' (poster/backdrop do conteúdo, NÃO é still) ou 'none' (placeholder local).
+export const episode_metadata = pgTable(
+  'episode_metadata',
+  {
+    content_id: integer('content_id')
+      .notNull()
+      .references(() => contents.id),
+    season: integer('season').notNull(),
+    episode: integer('episode').notNull(),
+    source: varchar('source', { length: 16 }).notNull(),
+    source_episode_id: varchar('source_episode_id', { length: 64 }),
+    title: varchar('title', { length: 512 }),
+    title_original: varchar('title_original', { length: 512 }),
+    overview: text('overview'),
+    air_date: date('air_date'),
+    runtime_sec: integer('runtime_sec'),
+    score: decimal('score'),
+    filler: boolean('filler'),
+    recap: boolean('recap'),
+    still_path: varchar('still_path', { length: 256 }),
+    still_url: text('still_url'),
+    thumbnail_url: text('thumbnail_url'),
+    // ─── Arte por episódio: procedência, vínculo e atribuição ───
+    image_source: varchar('image_source', { length: 16 }),
+    image_kind: varchar('image_kind', { length: 16 }),
+    image_match: varchar('image_match', { length: 16 }),
+    image_credit: varchar('image_credit', { length: 128 }),
+    image_credit_url: varchar('image_credit_url', { length: 256 }),
+    image_license: varchar('image_license', { length: 64 }),
+    fetched_at: timestamp('fetched_at', { withTimezone: true }).defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.content_id, table.season, table.episode] })],
+)
+
 // Torrent metadata cache: resolved file lists from info dict
 export const torrent_metadata = pgTable(
   'torrent_metadata',

@@ -76,9 +76,30 @@ export async function getTV(id: number, language = 'pt-BR'): Promise<any> {
   })
 }
 
+/**
+ * Um episódio de temporada no TMDB. `still_path` é a ÚNICA fonte de imagem
+ * por episódio disponível nos provedores já integrados (Jikan/MAL não expõe
+ * imagem por episódio) — resolvida via `tmdbImage(still_path, 'w300')`.
+ */
+export interface TmdbSeasonEpisode {
+  id?: number
+  season_number?: number
+  episode_number: number
+  name?: string | null
+  overview?: string | null
+  air_date?: string | null
+  runtime?: number | null
+  still_path?: string | null
+}
+
+export interface TmdbSeason {
+  season_number?: number
+  episodes?: TmdbSeasonEpisode[]
+}
+
 /** Full episode list for a TV season. */
-export async function getSeasonEpisodes(tvId: number, seasonNumber: number, language = 'pt-BR'): Promise<any> {
-  return tmdbGet(`/tv/${tvId}/season/${seasonNumber}`, { language })
+export async function getSeasonEpisodes(tvId: number, seasonNumber: number, language = 'pt-BR'): Promise<TmdbSeason> {
+  return tmdbGet<TmdbSeason>(`/tv/${tvId}/season/${seasonNumber}`, { language })
 }
 
 export function tmdbImage(path?: string | null, size = 'w500'): string | null {
@@ -150,6 +171,30 @@ export function getTrendingTV(pages = 1) {
 /** TV shows currently on the air. */
 export function getOnTheAirTV(pages = 2) {
   return discoverPaginated('/tv/on_the_air', pages)
+}
+
+/**
+ * Trending DIÁRIO do TMDB (`/trending/{movie|tv}/day`) — é um RANKING REAL do
+ * provedor, recalculado ao longo do dia. Alimenta a faixa "Em alta hoje" do app
+ * via `GET /trending`. Difere de `getTrendingMovies`/`getTrendingTV` (semanais,
+ * usados pelo job de descoberta) e de `discoverPaginated`: LANÇA em falha de
+ * HTTP, para o chamador distinguir "provedor fora do ar" de "lista vazia".
+ */
+export async function getTrendingDaily(
+  media: 'movie' | 'tv',
+  pages = 1,
+): Promise<TmdbDiscoverItem[]> {
+  const out: TmdbDiscoverItem[] = []
+  for (let page = 1; page <= pages; page++) {
+    const data = await tmdbGet<{ results?: TmdbDiscoverItem[]; total_pages?: number }>(
+      `/trending/${media}/day`,
+      { page, language: 'pt-BR' },
+    )
+    if (!data.results?.length) break
+    out.push(...data.results)
+    if (data.total_pages != null && page >= data.total_pages) break
+  }
+  return out
 }
 
 /** Discover anime via TMDB (genre 16 = animation + keyword "anime" = 210024). */

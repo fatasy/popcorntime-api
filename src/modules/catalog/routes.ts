@@ -21,6 +21,7 @@ import { anime_franchise_entries, contents, content_torrents, torrents } from '.
 import { resolveEpisodes, type EpisodeInfo } from '../torrent/episodes'
 import { classifySeasonCoverage, type SeasonCoverage } from '../torrent/season-coverage'
 import { extractQuality, hasPortugueseAudio } from '../../lib/parse'
+import { TRENDING_MAX_LIMIT, TRENDING_TYPES, getTrendingGroup, normalizeTrendingType } from './trending'
 import { jwtPlugin } from '../auth/jwt'
 import { resolveAuth } from '../auth/guard'
 import { refreshCatalogContent, type CatalogRefreshResult, type RefreshScope } from './refresh'
@@ -117,6 +118,11 @@ interface FilterInput {
   year?: number
   search?: string
   enriched?: boolean
+  // Lookup EXATO por ID externo — usado no clique de um item do /trending
+  // (que lista o catálogo externo sem filtrar). O app manda `type` junto:
+  // movie|series + tmdb_id, ou anime + mal_id.
+  tmdb_id?: number
+  mal_id?: number
   // ISO timestamps: filter by when the content was added to the catalog.
   created_after?: string
   created_before?: string
@@ -138,6 +144,18 @@ function parseDateOnly(value?: string): string | null {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
     ? value
     : null
+}
+
+/**
+ * Inteiro positivo vindo da query. Ausente/inválido -> null (o parâmetro é
+ * simplesmente ignorado, mesma filosofia de `parseDate`: um query param ruim
+ * não pode derrubar a listagem).
+ */
+function positiveInt(value?: number | null): number | null {
+  if (value == null) return null
+  if (!Number.isFinite(value)) return null
+  const n = Math.trunc(value)
+  return n > 0 ? n : null
 }
 
 // Os gêneros são gravados em IDIOMAS diferentes por fonte: TMDB (filmes/séries) em
@@ -175,6 +193,12 @@ function buildFilters(input: FilterInput): SQL[] {
   const conds: SQL[] = [isNull(contents.canonical_content_id)]
   if (input.type) conds.push(eq(contents.type, input.type))
   if (input.year != null) conds.push(eq(contents.year, input.year))
+  // Lookup exato por ID externo (clique do /trending). Note que os IDs do TMDB
+  // de movie e tv são espaços distintos — por isso o app envia `type` junto.
+  const tmdbId = positiveInt(input.tmdb_id)
+  if (tmdbId != null) conds.push(eq(contents.tmdb_id, tmdbId))
+  const malId = positiveInt(input.mal_id)
+  if (malId != null) conds.push(eq(contents.mal_id, malId))
   if (input.genre) conds.push(genreFilter(input.genre))
   if (input.search) conds.push(ilike(contents.title, `%${input.search}%`))
   if (input.enriched) conds.push(isNotNull(contents.enriched_at))
@@ -291,6 +315,8 @@ export const catalogRoutes = new Elysia()
         created_before: query.created_before,
         released_after: query.released_after,
         released_before: query.released_before,
+        tmdb_id: query.tmdb_id,
+        mal_id: query.mal_id,
       })
       const isValidSort = query.sort === 'popular' || (query.sort != null && query.sort in SORT_COLUMNS)
       const sort = isValidSort ? (query.sort as SortKey | 'popular') : 'created_at'
@@ -303,6 +329,10 @@ export const catalogRoutes = new Elysia()
         type: t.Optional(t.String()),
         genre: t.Optional(t.String()),
         year: t.Optional(t.Numeric()),
+        // Lookup exato por ID EXTERNO (clique de item do /trending): envie
+        // `type` junto — movie|series + tmdb_id, ou anime + mal_id.
+        tmdb_id: t.Optional(t.Numeric()),
+        mal_id: t.Optional(t.Numeric()),
         q: t.Optional(t.String()),
         sort: t.Optional(t.String()),
         order: t.Optional(t.String()),
@@ -674,5 +704,42 @@ export const catalogRoutes = new Elysia()
         limit: t.Optional(t.Numeric()),
       }),
       detail: { summary: 'Search catalog by title', tags: ['catalog'] },
+    },
+  )
+  // GET /trending — faixas `{ title, source, type, data }` ordenadas PELO
+  // PROVEDOR (TMDB trending/day; Jikan top airing), com a lista COMPLETA do
+  // provedor (sem filtrar pelo catálogo interno). A lista é persistida em
+  // `metadata_cache` e atualizada 1x/dia (refresh preguiçoso no primeiro pedido
+  // após 24h). Substitui o "Top 10 de hoje" que o app montava com
+  // /catalog?sort=popular (ordem por seeds, não por ranking externo).
+  .get(
+    '/trending',
+    async ({ query, set }) => {
+      const limit = Math.min(TRENDING_MAX_LIMIT, Math.max(1, query.limit ?? 10))
+      const requested = (query.type ?? 'all').trim().toLowerCase()
+
+      // Sem `type` (ou type=all): devolve as três faixas em um único request,
+      // cada uma com seu rótulo. Uma faixa indisponível não afeta as outras.
+      if (requested === '' || requested === 'all') {
+        const groups = await Promise.all(TRENDING_TYPES.map((type) => getTrendingGroup(type, limit)))
+        return { generated_at: new Date().toISOString(), limit, groups }
+      }
+
+      const type = normalizeTrendingType(requested)
+      if (!type) {
+        set.status = 400
+        return { error: `Unknown type "${query.type}". Use movie | series | anime | all` }
+      }
+      return await getTrendingGroup(type, limit)
+    },
+    {
+      query: t.Object({
+        type: t.Optional(t.String()),
+        limit: t.Optional(t.Numeric()),
+      }),
+      detail: {
+        summary: 'Provider-ranked rows (TMDB trending/day, Jikan top airing) matched to the catalog',
+        tags: ['catalog'],
+      },
     },
   )

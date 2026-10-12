@@ -121,7 +121,8 @@ test('AnimesOnline rejeita CDN com HTML, redirecionamento local e episódios sem
 })
 
 test('AnimesOnline valida as referências e cancela respostas não HTML sem ler a mídia', async () => {
-  for (const page of ['http://127.0.0.1/episodio/example', `${BASE}/anime/example`, 'https://user:pass@animesonline.cloud/episodio/example']) {
+  for (const page of ['http://127.0.0.1/episodio/example', `${BASE}/anime/example`, 'https://user:pass@animesonline.cloud/episodio/example',
+    `${BASE}/episodio/example-episodio-01#audio=invalid`]) {
     await assert.rejects(resolveAnimesOnline(page), /Referência/)
   }
   const page = `${BASE}/episodio/example-episodio-01`
@@ -134,4 +135,25 @@ test('AnimesOnline valida as referências e cancela respostas não HTML sem ler 
     Object.defineProperty(response.body, 'getReader', { value: () => assert.fail('não deve ler mídia') })
     return response
   } }, async () => { await assert.rejects(resolveAnimesOnline(page), /diferente de HTML/) })
+})
+
+test('AnimesOnline preserva o áudio quando uma página anuncia MP4 dublado e legendado juntos', async () => {
+  const page = `${BASE}/episodio/example-episodio-01`
+  const subbed = 'https://mangas.cloud/Example/001.mp4'
+  const dubbed = 'https://mangas.cloud/Example%20Dublado/01.mp4'
+  const html = episodePage(`<video><source src="${dubbed}"><source src="${subbed}"></video>`)
+  for (const audio of ['subbed', 'dubbed'] as const) {
+    const wanted = audio === 'subbed' ? subbed : dubbed
+    await withFetch({ [`GET ${page}`]: html,
+      [`HEAD ${wanted}`]: () => new Response(null, { headers: { 'content-type': 'video/mp4' } }),
+    }, async (requests) => {
+      const stream = await resolveAnimesOnline(audio === 'subbed' ? page : `${page}#audio=dubbed`)
+      assert.equal(stream.url, wanted)
+      assert.equal(requests.length, 2)
+    })
+  }
+  await withFetch({ [`GET ${page}`]: html, [`HEAD ${subbed}`]: () => new Response(null, { status: 403 }) }, async (requests) => {
+    await assert.rejects(resolveAnimesOnline(page), /nenhum servidor/)
+    assert.ok(requests.every((request) => request.url !== dubbed))
+  })
 })

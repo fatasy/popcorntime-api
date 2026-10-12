@@ -7,7 +7,18 @@ const MAX_HTML_BYTES = 4 * 1024 * 1024
 const MAX_SEARCH_PAGES = 4
 // Only probe the public media hosts advertised by this provider. Redirects use
 // the same allowlist; a scraped URL cannot turn the API into a generic fetcher.
-const MEDIA_HOSTS = new Set(['animeflix.blog', 'animes.click', 'aniplay.online', 'eos.feralhosting.com'])
+const MEDIA_HOSTS = new Set(['animeflix.blog', 'animes.click', 'aniplay.online', 'eos.feralhosting.com', 'mangas.cloud'])
+
+function audioMarker(value: string): AnimeAudioType | null {
+  const normalized = value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[._+-]/g, ' ')
+  if (/\b(?:dub|dubbed|dublado|portugues)\b/i.test(normalized)) return 'dubbed'
+  if (/\b(?:sub|subbed|legendado|japones)\b/i.test(normalized)) return 'subbed'
+  return null
+}
+
+function pageAudioType(pageUrl: string): AnimeAudioType {
+  return audioMarker(new URL(pageUrl).pathname) ?? 'subbed'
+}
 
 function providerUrl(value: string, base = ANIMESONLINE_BASE): string | null {
   try {
@@ -129,18 +140,25 @@ export async function discoverAnimesOnline(request: AnimeHttpRequest, signal?: A
     const page = await readHtml(hit.url, signal)
     return parseAnimesOnlineEpisodes(page.html, hit)
       .filter((episode) => request.targetEpisode == null || episode.episode === request.targetEpisode)
+      .map((episode) => pageAudioType(episode.pageUrl) === episode.audioType ? episode
+        : { ...episode, pageUrl: `${episode.pageUrl}#audio=${episode.audioType}` })
   }))
   return listings.flat().sort((a, b) => a.episode - b.episode || a.pageUrl.localeCompare(b.pageUrl))
 }
 
-export function extractAnimesOnlineStreams(html: string, pageUrl: string): ResolvedHttpStream[] {
+export function extractAnimesOnlineStreams(html: string, pageUrl: string, audioType?: AnimeAudioType): ResolvedHttpStream[] {
   const $ = load(html)
+  const pageAudio = audioMarker($('.animeq-player').first().attr('data-post-title') ?? '') ?? pageAudioType(pageUrl)
   const streams = new Map<string, ResolvedHttpStream>()
   $('.animeq-player video[src], .animeq-player video source[src], .animeq-player [data-video-src]').each((_, element) => {
     const node = $(element)
     const url = mediaUrl(node.attr('data-video-src') ?? node.attr('src') ?? '', pageUrl)
     if (!url || !/\.(mp4|m3u8|webm)$/i.test(new URL(url).pathname)) return
     const label = node.attr('label') ?? node.attr('data-video-title') ?? null
+    let path = new URL(url).pathname
+    try { path = decodeURIComponent(path) } catch { /* use the encoded path */ }
+    const advertisedAudio = audioMarker(path) ?? audioMarker(label ?? '') ?? pageAudio
+    if (audioType && advertisedAudio !== audioType) return
     const quality = label ? /FHD|Full\s*HD|1080/i.test(label) ? '1080p'
       : /720|^HD$/i.test(label) ? '720p' : /480|^SD$/i.test(label) ? '480p' : null : null
     const mimeType = /\.m3u8$/i.test(new URL(url).pathname) ? 'application/vnd.apple.mpegurl'
@@ -176,8 +194,10 @@ async function probeStream(stream: ResolvedHttpStream, signal: AbortSignal): Pro
 export async function resolveAnimesOnline(pageUrl: string): Promise<ResolvedHttpStream> {
   const parsed = providerUrl(pageUrl)
   if (!parsed || !/^\/episodio\/[^/]+\/?$/.test(new URL(parsed).pathname)) throw new Error('Referência do AnimesOnline inválida')
+  const audio = new URLSearchParams(new URL(pageUrl).hash.slice(1)).get('audio')
+  if (audio != null && audio !== 'dubbed' && audio !== 'subbed') throw new Error('Referência de áudio do AnimesOnline inválida')
   const page = await readHtml(parsed)
-  const streams = extractAnimesOnlineStreams(page.html, page.url).slice(0, 6)
+  const streams = extractAnimesOnlineStreams(page.html, page.url, audio ?? pageAudioType(parsed)).slice(0, 6)
   if (!streams.length) throw new Error('AnimesOnline: episódio sem URL HTTP direta compatível')
   const controller = new AbortController()
   try {

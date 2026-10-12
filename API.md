@@ -480,6 +480,9 @@ O AnimesOnline.cloud expõe URLs diretas na página do episódio. Sua resoluçã
 faz apenas HEAD nas CDNs permitidas para selecionar um espelho disponível,
 ignorando iframes e respostas HTML. A resposta inclui `mimeType` do MP4/HLS/WebM.
 Falha de todos os espelhos retorna 502, preservando o idioma da referência.
+Páginas que anunciam os dois áudios não permitem fallback entre eles. Quando o
+idioma da referência difere do idioma da página, `page_url` guarda `#audio=dubbed`
+ou `#audio=subbed`; o fragmento não é enviado ao site nem à CDN.
 
 Essa resposta é JSON com `Cache-Control: no-store`. O app reproduz `url` direto
 na CDN; a API não faz proxy nem download de mídia. IDs inexistentes retornam

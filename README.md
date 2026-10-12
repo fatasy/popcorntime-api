@@ -88,6 +88,9 @@ O AnimesOnline.cloud extrai apenas URLs MP4/HLS/WebM anunciadas na página do
 episódio, sem carregar os iframes. Ao resolver, consulta os cabeçalhos das CDNs
 permitidas com HEAD e escolhe um espelho disponível; não lê corpos de mídia nem
 troca o áudio escolhido. Se todos os espelhos falharem, a resolução retorna erro.
+URLs que indicam o outro áudio são descartadas, inclusive em páginas que
+misturam dublado e legendado. Algumas CDNs podem devolver 403/404 para arquivos
+antigos; a referência da página é mantida para poder resolver links atualizados.
 
 A AnimeFire agrupa temporadas; a integração preserva os números locais e os
 offsets das partes do MAL. Cada áudio tem uma referência própria, e a resolução

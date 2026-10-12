@@ -121,6 +121,10 @@ sem migração adicional. Valide busca, coleta e resolução com
 A resolução verifica apenas os cabeçalhos das CDNs permitidas com HEAD e
 seleciona um espelho disponível, sem baixar mídia. O APK Android 1.0.11
 acrescenta o nome dessa fonte ao seletor de reprodução.
+Na validação de 12/10/2026, Sword Art Online dublado e legendado responderam
+HTTP 200 na VPS via `animeflix.blog`. Os arquivos de Attack on Titan anunciados
+em `mangas.cloud` responderam 403 na VPS e 404 no PC; nesses episódios a nova
+fonte retorna indisponibilidade, sem trocar de áudio ou afetar outros provedores.
 
 ## Estrutura do projeto
 

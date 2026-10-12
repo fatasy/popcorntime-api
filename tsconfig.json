@@ -28,5 +28,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // One-off production lookup scripts are not application source.
+  "exclude": ["node_modules", "mint.mts"]
 }

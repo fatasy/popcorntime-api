@@ -32,3 +32,11 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Runtime subtitle downloads and translations
+/local-subtitles/
+/public/**/*.srt
+/public/**/*.vtt
+
+# One-off production torrent lookup
+/mint.mts

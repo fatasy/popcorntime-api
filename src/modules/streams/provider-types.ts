@@ -1,5 +1,5 @@
 export type AnimeAudioType = 'dubbed' | 'subbed'
-export type AnimeHttpProviderId = 'animesdigital' | 'animefire'
+export type AnimeHttpProviderId = 'animesdigital' | 'animefire' | 'animesonline'
 
 export interface AnimeHttpEpisode {
   provider: AnimeHttpProviderId

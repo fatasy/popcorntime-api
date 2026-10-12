@@ -123,8 +123,8 @@ test('recusa erros HTTP e mídia em lugar de JSON sem ler o corpo de vídeo', as
   })
 })
 
-test('ambos os provedores são publicados e a falha de um preserva as fontes do outro', async () => {
-  assert.deepEqual(httpProviderMetadata().map((provider) => provider.id), ['animesdigital', 'animefire'])
+test('os provedores são publicados e a falha de um preserva as fontes do outro', async () => {
+  assert.deepEqual(httpProviderMetadata().map((provider) => provider.id), ['animesdigital', 'animefire', 'animesonline'])
   const episodes = parseAnimeFireEpisodes(detail, { titles: ['Example'], targetEpisode: 1 })
   const result = await discoverAnimeHttpSources({ titles: ['Example'] }, undefined, [
     { ...animeHttpProviders[0]!, discover: async () => { throw new Error('HTTP 503') } },

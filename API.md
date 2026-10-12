@@ -431,8 +431,8 @@ Baixa da fonte, descompacta, converte encoding → UTF-8, converte SRT → WebVT
 ## Fontes HTTP para animes
 
 `GET /streams/providers` lista os provedores HTTP disponíveis: `animesdigital`
-(AnimesDigital) e `animefire` (AnimeFire), ambos com versões `dubbed` (dublado)
-e `subbed` (legendado).
+(AnimesDigital), `animefire` (AnimeFire) e `animesonline` (AnimesOnline.cloud),
+todos com versões `dubbed` (dublado) e `subbed` (legendado).
 
 As rotas existentes `POST /catalog/:id/refresh` e
 `POST /catalog/:id/episodes/:season/:episode/refresh` também coletam referências
@@ -475,6 +475,11 @@ O campo opcional `mimeType` identifica o formato ao player. A AnimeFire devolve
 As versões de áudio são resolvidas separadamente, sem trocar automaticamente
 de dublado para legendado quando uma delas está indisponível. A CDN dessa fonte
 restringe CORS ao próprio site, o que pode impedir sua reprodução na versão web.
+
+O AnimesOnline.cloud expõe URLs diretas na página do episódio. Sua resolução
+faz apenas HEAD nas CDNs permitidas para selecionar um espelho disponível,
+ignorando iframes e respostas HTML. A resposta inclui `mimeType` do MP4/HLS/WebM.
+Falha de todos os espelhos retorna 502, preservando o idioma da referência.
 
 Essa resposta é JSON com `Cache-Control: no-store`. O app reproduz `url` direto
 na CDN; a API não faz proxy nem download de mídia. IDs inexistentes retornam

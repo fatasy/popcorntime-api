@@ -115,6 +115,13 @@ a VPS. A integração permanece cadastrada, mas sua coleta/resolução nesta VPS
 depende de o provedor permitir esse acesso. O erro aparece em `sourceWarnings`
 sem impedir a coleta da AnimesDigital.
 
+A fonte `animesonline` (AnimesOnline.cloud) usa a mesma tabela `http_streams`,
+sem migração adicional. Valide busca, coleta e resolução com
+`bun scripts/check-http-sources.ts "Sword Art Online" 1 animesonline` na VPS.
+A resolução verifica apenas os cabeçalhos das CDNs permitidas com HEAD e
+seleciona um espelho disponível, sem baixar mídia. O APK Android 1.0.11
+acrescenta o nome dessa fonte ao seletor de reprodução.
+
 ## Estrutura do projeto
 
 ```

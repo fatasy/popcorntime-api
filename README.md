@@ -71,8 +71,8 @@ polling do app; não representa uma garantia de tempo para qualquer episódio.
 
 ## Fontes HTTP de anime
 
-Provedores: **AnimesDigital**, por scraping das páginas públicas, e **AnimeFire**,
-pela API pública, com opções dubladas e legendadas. Use os botões de atualizar fontes do
+Provedores: **AnimesDigital** e **AnimesOnline.cloud**, por scraping das páginas
+públicas, e **AnimeFire**, pela API pública, com opções dubladas e legendadas. Use os botões de atualizar fontes do
 título ou do episódio para coletar as referências. O casamento usa os títulos da
 temporada/parte do MAL, sem misturar a obra com sequelas de nome semelhante.
 
@@ -83,6 +83,11 @@ hospeda vídeos, manifestos HLS ou segmentos, e não faz proxy de mídia.
 Fontes que só oferecem um player sem URL direta retornam erro explícito.
 Os provedores são consultados independentemente: uma falha gera `sourceWarnings`
 e preserva as referências encontradas nas outras fontes.
+
+O AnimesOnline.cloud extrai apenas URLs MP4/HLS/WebM anunciadas na página do
+episódio, sem carregar os iframes. Ao resolver, consulta os cabeçalhos das CDNs
+permitidas com HEAD e escolhe um espelho disponível; não lê corpos de mídia nem
+troca o áudio escolhido. Se todos os espelhos falharem, a resolução retorna erro.
 
 A AnimeFire agrupa temporadas; a integração preserva os números locais e os
 offsets das partes do MAL. Cada áudio tem uma referência própria, e a resolução
@@ -103,4 +108,5 @@ bun test src/modules/streams
 # Verifica HTML/JSON + HEAD, sem baixar o vídeo:
 bun scripts/check-http-sources.ts "Spy x Family" 1
 bun scripts/check-http-sources.ts "Overgeared" 3 animefire
+bun scripts/check-http-sources.ts "Sword Art Online" 1 animesonline
 ```

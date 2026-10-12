@@ -1,11 +1,13 @@
 import { discoverAnimesDigital, resolveAnimesDigital } from './animesdigital'
 import { discoverAnimeFire, resolveAnimeFire } from './animefire'
+import { discoverAnimesOnline, resolveAnimesOnline } from './animesonline'
 import type { AnimeHttpProvider, AnimeHttpRequest } from './provider-types'
 
 export const animeHttpProviders: readonly AnimeHttpProvider[] = [
   { id: 'animesdigital', name: 'AnimesDigital',
     discover: (request, signal) => discoverAnimesDigital(request.titles, request.targetEpisode, signal), resolve: resolveAnimesDigital },
   { id: 'animefire', name: 'AnimeFire', discover: discoverAnimeFire, resolve: resolveAnimeFire },
+  { id: 'animesonline', name: 'AnimesOnline.cloud', discover: discoverAnimesOnline, resolve: resolveAnimesOnline },
 ]
 
 export function httpProviderMetadata() {

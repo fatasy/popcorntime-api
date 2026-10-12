@@ -1,9 +1,10 @@
-import { and, eq, gt, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { anime_franchise_entries, contents, content_torrents, torrents, torrent_episodes, metadata_cache, http_streams } from '../../types'
 import { mergeHttpEpisodeSources, type HttpEpisodeSource } from '../streams/episodes'
-import { getTV, getSeasonEpisodes } from '../enrichment/tmdb'
-import { getAnimeEpisodes, type JikanEpisode } from '../enrichment/myanimelist'
+import type { JikanEpisode } from '../enrichment/myanimelist'
+import { cachedAnimeEpisodes, cachedTV, cachedSeasonEpisodes } from './catalog-cache'
+import { BackgroundRefreshQueue } from '../../lib/background-refresh'
 import * as aniskip from '../enrichment/aniskip'
 import { parseRelease, hasPortugueseAudio } from '../../lib/parse'
 import {
@@ -335,7 +336,7 @@ export async function resolveEpisodes(
   let externalImdbId: string | null = null
   if (content.tmdb_id) {
     try {
-      const resolved = await resolveWithTmdb(contentId, content.tmdb_id, linked, fallbackArt)
+      const resolved = await resolveWithTmdb(contentId, content.tmdb_id, linked, fallbackArt, !!options.forceExternal)
       episodes = resolved.episodes
       tmdbRecords = resolved.tmdbRecords
       externalImdbId = resolved.externalImdbId
@@ -380,7 +381,7 @@ export async function resolveEpisodes(
     poster_url: content.poster_url,
     backdrop_url: content.backdrop_url,
   }
-  await resolveEpisodeMetadata(metaContext, episodes, tmdbRecords)
+  await resolveEpisodeMetadata(metaContext, episodes, tmdbRecords, { cacheOnly: !options.forceExternal })
 
   // 4. Best-effort: anexa marcadores de abertura/créditos via AniSkip (anime com
   //    mal_id). Cacheado em metadata_cache; o runtime do TMDB já foi anexado em
@@ -399,10 +400,10 @@ export async function resolveEpisodes(
             (entry.episode_count == null ||
               episode.episode <= entry.episode_offset + entry.episode_count),
         )
-        await attachAniskipMarkers(entry.mal_id, seasonEpisodes, entry.episode_offset)
+        await attachAniskipMarkers(entry.mal_id, seasonEpisodes, entry.episode_offset, !!options.forceExternal)
       }
     } else {
-      await attachAniskipMarkers(content.mal_id, episodes)
+      await attachAniskipMarkers(content.mal_id, episodes, 0, !!options.forceExternal)
     }
   }
 
@@ -423,13 +424,15 @@ async function resolveWithTmdb(
   tmdbId: number,
   linked: LinkedTorrent[],
   fallbackArt: string | null,
+  forceExternal = false,
 ): Promise<{
   episodes: EpisodeInfo[]
   tmdbRecords: TmdbEpisodeRecord[]
   externalImdbId: string | null
 }> {
   // Fetch TV details to get season list
-  const tv = await getTV(tmdbId)
+  const tv = await cachedTV(tmdbId, forceExternal)
+  if (!tv) throw new Error('TMDB catalog is warming in the background')
 
   // `external_ids` vem no mesmo request (append_to_response): id externo do
   // IMDb para vincular provedores de arte por id (nunca por nome) em séries.
@@ -454,9 +457,16 @@ async function resolveWithTmdb(
     .filter((s: any) => s.season_number > 0) // skip specials (season 0)
     .map(async (s: any) => {
       const seasonNum: number = s.season_number
+      // The persisted season count is enough to show the full catalog while
+      // episode titles/artwork are being refreshed, including missing sources.
+      for (let episode = 1; episode <= (s.episode_count ?? 0); episode++) {
+        tmdbEpisodes.set(`${seasonNum}|${episode}`, {
+          id: null, title: null, air_date: null, runtime: null, overview: null, still_path: null,
+        })
+      }
       try {
-        const data = await getSeasonEpisodes(tmdbId, seasonNum)
-        for (const ep of data.episodes ?? []) {
+        const data = await cachedSeasonEpisodes(tmdbId, seasonNum, forceExternal)
+        for (const ep of data?.episodes ?? []) {
           const key = `${seasonNum}|${ep.episode_number}`
           tmdbEpisodes.set(key, {
             id: typeof ep.id === 'number' ? ep.id : null,
@@ -483,7 +493,8 @@ async function resolveWithTmdb(
   const coverageResults = new Map<number, SeasonCoverage>()
   for (const t of linked) {
     try {
-      const coverage = await classifySeasonCoverage(t.title, tmdbId)
+      const coverage = await classifySeasonCoverage(t.title, tmdbId,
+        tv.number_of_seasons ?? seasons.filter((s: any) => s.season_number > 0).length)
       coverageResults.set(t.torrent_id, coverage)
     } catch (err) {
       console.warn(
@@ -652,37 +663,8 @@ async function resolveWithTmdb(
 
 // ─── Jikan episode catalog ────────────────────────────────────────────────
 
-const JIKAN_EPISODE_CACHE_HOURS = 6
-
 async function loadJikanCatalog(malId: number, force: boolean): Promise<JikanEpisode[]> {
-  const key = String(malId)
-  if (!force) {
-    const cutoff = new Date(Date.now() - JIKAN_EPISODE_CACHE_HOURS * 60 * 60 * 1000)
-    const rows = await db
-      .select({ response: metadata_cache.response })
-      .from(metadata_cache)
-      .where(
-        and(
-          eq(metadata_cache.source, 'jikan-episodes'),
-          eq(metadata_cache.lookup_key, key),
-          gt(metadata_cache.cached_at, cutoff),
-        ),
-      )
-      .limit(1)
-    if (Array.isArray(rows[0]?.response)) return rows[0]!.response as JikanEpisode[]
-  }
-
-  const fetched = await getAnimeEpisodes(malId)
-  if (fetched.length > 0) {
-    await db
-      .insert(metadata_cache)
-      .values({ source: 'jikan-episodes', lookup_key: key, response: fetched })
-      .onConflictDoUpdate({
-        target: [metadata_cache.source, metadata_cache.lookup_key],
-        set: { response: fetched, cached_at: sql`now()` },
-      })
-  }
-  return fetched
+  return cachedAnimeEpisodes(malId, force)
 }
 
 async function mergeJikanCatalog(
@@ -899,6 +881,10 @@ function resolveHeuristic(linked: LinkedTorrent[], fallbackArt: string | null): 
 
 // ─── Marcadores: AniSkip (abertura/créditos) ───────────────────────────────
 
+const markerRefreshes = new BackgroundRefreshQueue(3, 5 * 60_000, (key, error) => {
+  console.warn(`[episodes] background marker refresh failed (${key}):`, (error as Error).message)
+})
+
 /** Lê do metadata_cache; busca no AniSkip e cacheia (incl. "vazio") em miss. */
 async function cachedAniskip(
   malId: number,
@@ -938,11 +924,23 @@ async function attachAniskipMarkers(
   malId: number,
   episodes: EpisodeInfo[],
   episodeOffset = 0,
+  fetchMissing = false,
 ): Promise<void> {
-  for (const ep of episodes) {
-    if (ep.season === 0 || ep.episode === 0) continue
+  const targets = episodes.filter((ep) => ep.season > 0 && ep.episode > episodeOffset)
+  if (targets.length === 0) return
+  const keys = targets.map((ep) => `${malId}:${ep.episode - episodeOffset}`)
+  const rows = await db.select({ key: metadata_cache.lookup_key, response: metadata_cache.response })
+    .from(metadata_cache).where(and(eq(metadata_cache.source, 'aniskip'), inArray(metadata_cache.lookup_key, keys)))
+  const cached = new Map(rows.map((row) => [row.key, row.response as aniskip.AniSkipMarkers & { _none?: boolean }]))
+  for (const ep of targets) {
     try {
-      const sk = await cachedAniskip(malId, ep.episode - episodeOffset)
+      const key = `${malId}:${ep.episode - episodeOffset}`
+      const stored = cached.get(key)
+      let sk: aniskip.AniSkipMarkers | null = stored && !stored._none ? stored : null
+      if (!cached.has(key)) {
+        if (fetchMissing) sk = await cachedAniskip(malId, ep.episode - episodeOffset)
+        else markerRefreshes.schedule(key, () => cachedAniskip(malId, ep.episode - episodeOffset))
+      }
       if (!sk) continue
       const m: EpisodeMarkers = ep.markers ?? { source: 'aniskip' }
       if (sk.introStart != null && sk.introEnd != null) {
@@ -961,32 +959,35 @@ async function attachAniskipMarkers(
 
 async function cacheResults(contentId: number, episodes: EpisodeInfo[]): Promise<void> {
   try {
+    const rows = new Map<string, typeof torrent_episodes.$inferInsert>()
     for (const ep of episodes) {
       for (const t of ep.torrents) {
-        await db
-          .insert(torrent_episodes)
-          .values({
-            content_id: contentId,
-            torrent_hash: t.hash,
-            season: ep.season,
-            episode: ep.episode,
-            file_index: t.file_index,
-            inferred: t.inferred,
-          })
-          .onConflictDoUpdate({
-            target: [
-              torrent_episodes.content_id,
-              torrent_episodes.torrent_hash,
-              torrent_episodes.season,
-              torrent_episodes.episode,
-            ],
-            set: {
-              file_index: t.file_index,
-              inferred: t.inferred,
-              resolved_at: new Date(),
-            },
-          })
+        rows.set(`${t.hash}:${ep.season}:${ep.episode}`, {
+          content_id: contentId,
+          torrent_hash: t.hash,
+          season: ep.season,
+          episode: ep.episode,
+          file_index: t.file_index,
+          inferred: t.inferred,
+        })
       }
+    }
+    const values = [...rows.values()]
+    for (let offset = 0; offset < values.length; offset += 500) {
+      await db.insert(torrent_episodes).values(values.slice(offset, offset + 500))
+        .onConflictDoUpdate({
+          target: [
+            torrent_episodes.content_id,
+            torrent_episodes.torrent_hash,
+            torrent_episodes.season,
+            torrent_episodes.episode,
+          ],
+          set: {
+            file_index: sql`excluded.file_index`,
+            inferred: sql`excluded.inferred`,
+            resolved_at: new Date(),
+          },
+        })
     }
   } catch (err) {
     console.warn(`[episodes] Failed to cache episodes for content ${contentId}:`, (err as Error).message)

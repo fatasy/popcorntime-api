@@ -471,10 +471,18 @@ Se `image_kind = "still"`, exiba `image_credit` com link para `image_credit_url`
 Episódios de "pacote" (temporada/episódio `0`, quando a listagem não conseguiu
 separar os arquivos) normalmente vêm com `image_kind = "fallback"`.
 
-O metadado é resolvido no servidor e persistido por até 24h (tabela
-`episode_metadata`); a primeira chamada de um conteúdo pode ser mais lenta
-(consulta às fontes externas) e é retomada automaticamente se alguma fonte
-falhar.
+O metadado é persistido por até 24h na tabela `episode_metadata`. A listagem usa
+os dados já salvos, incluindo o último catálogo válido quando seu cache vence,
+e renova títulos, artes e marcadores em segundo plano. A falha de Jikan, TMDB,
+TVMaze ou AniSkip não impede a resposta com as fontes de reprodução atuais.
+
+As contagens de episódios das temporadas/franquias mantêm os episódios sem
+fonte visíveis enquanto os metadados são renovados. Um título TMDB sem nenhum
+catálogo salvo tem uma tentativa inicial limitada a 1,2 s; as consultas de
+episódios restantes continuam em segundo plano. A atualização explícita via
+`POST /catalog/:id/refresh` continua aguardando o catálogo externo quando o
+escopo inclui metadados. Renovações simultâneas do mesmo catálogo são unificadas,
+com concorrência limitada e espera entre novas tentativas após uma falha.
 
 ---
 

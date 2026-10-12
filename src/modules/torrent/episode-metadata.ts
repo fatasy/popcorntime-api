@@ -33,6 +33,11 @@ import {
 } from './episode-providers'
 import type { ListingTarget, ProviderEpisode } from './episode-providers'
 import type { EpisodeInfo } from './episodes'
+import { BackgroundRefreshQueue } from '../../lib/background-refresh'
+
+const metadataRefreshes = new BackgroundRefreshQueue(2, 5 * 60_000, (key, error) => {
+  console.warn(`[episode-metadata] background refresh failed (${key}):`, (error as Error).message)
+})
 
 // Superfície pública do módulo (compatível com os imports já existentes em
 // `episodes.ts` e com quem consumir o contrato de arte por episódio).
@@ -216,14 +221,15 @@ function finalizeAcc(entry: AccEntry, fallbackArt: string | null): EpisodeMetada
 // ─── Leitura / escrita das linhas ──────────────────────────────────────────
 
 /** Linhas persistidas e ainda dentro da janela de TTL. */
-export async function loadEpisodeMetadata(contentId: number): Promise<Map<string, EpisodeMetadata>> {
+export async function loadEpisodeMetadata(contentId: number, allowStale = false): Promise<Map<string, EpisodeMetadata>> {
   try {
     const cutoff = new Date(Date.now() - EPISODE_METADATA_TTL_HOURS * 60 * 60 * 1000)
     const rows = await db
       .select()
       .from(episode_metadata)
       .where(
-        and(eq(episode_metadata.content_id, contentId), gt(episode_metadata.fetched_at, cutoff)),
+        and(eq(episode_metadata.content_id, contentId),
+          ...(allowStale ? [] : [gt(episode_metadata.fetched_at, cutoff)])),
       )
     return new Map(rows.map((r) => [metaKey(r.season, r.episode), fromRow(r)]))
   } catch (err) {
@@ -536,8 +542,14 @@ export async function resolveEpisodeMetadata(
   content: EpisodeMetadataContext,
   episodes: EpisodeInfo[],
   tmdbRecords?: TmdbEpisodeRecord[],
+  options: { cacheOnly?: boolean } = {},
 ): Promise<void> {
   try {
+    if (options.cacheOnly) {
+      attachEpisodeMetadata(episodes, await loadEpisodeMetadata(content.id, true))
+      metadataRefreshes.schedule(String(content.id), () => syncEpisodeMetadata(content, episodes, tmdbRecords))
+      return
+    }
     const meta = await syncEpisodeMetadata(content, episodes, tmdbRecords)
     attachEpisodeMetadata(episodes, meta)
   } catch (err) {

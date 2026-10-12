@@ -1,4 +1,4 @@
-import { getTV } from '../enrichment/tmdb'
+import { cachedTV } from './catalog-cache'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -10,7 +10,22 @@ export interface SeasonCoverage {
 
 // ─── Cache ────────────────────────────────────────────────────────────────
 
-const coverageCache = new Map<string, SeasonCoverage>()
+const coverageCache = new Map<string, { value: SeasonCoverage; expiresAt: number }>()
+const seasonCountCache = new Map<number, { value: number; expiresAt: number }>()
+
+function cacheCoverage(key: string, value: SeasonCoverage): void {
+  coverageCache.set(key, { value,
+    expiresAt: Date.now() + (value.confidence === 'tmdb' ? 24 * 60 * 60_000 : 30_000) })
+}
+
+async function cachedSeasonCount(tmdbId: number): Promise<number> {
+  const cached = seasonCountCache.get(tmdbId)
+  if (cached && cached.expiresAt > Date.now()) return cached.value
+  const tv = await cachedTV(tmdbId)
+  const value = tv?.number_of_seasons ?? tv?.seasons?.filter((s: any) => s.season_number > 0).length ?? 0
+  seasonCountCache.set(tmdbId, { value, expiresAt: Date.now() + (value ? 60_000 : 30_000) })
+  return value
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────
 
@@ -25,24 +40,24 @@ const coverageCache = new Map<string, SeasonCoverage>()
 export async function classifySeasonCoverage(
   torrentTitle: string,
   tmdbId: number | null,
+  knownSeasonCount?: number,
 ): Promise<SeasonCoverage> {
   // Normalize title for consistent cache key
-  const cacheKey = `${tmdbId ?? 'none'}::${torrentTitle.toLowerCase().trim()}`
+  const cacheKey = `${tmdbId ?? 'none'}:${knownSeasonCount ?? ''}::${torrentTitle.toLowerCase().trim()}`
   const cached = coverageCache.get(cacheKey)
-  if (cached) return cached
+  if (cached && cached.expiresAt > Date.now()) return cached.value
 
   // ── Layer 1: TMDB-informed ──────────────────────────────────────────
   if (tmdbId != null) {
     try {
-      const tv = await getTV(tmdbId)
-      const seasonCount = tv.number_of_seasons ?? tv.seasons?.length ?? 0
+      const seasonCount = knownSeasonCount ?? await cachedSeasonCount(tmdbId)
 
       if (seasonCount > 0) {
         const numbers = extractSeasonNumbers(torrentTitle)
         const coverage = classifyFromNumbers(numbers, seasonCount)
 
         if (coverage.type !== 'unknown') {
-          coverageCache.set(cacheKey, coverage)
+          cacheCoverage(cacheKey, coverage)
           return coverage
         }
       }
@@ -57,7 +72,7 @@ export async function classifySeasonCoverage(
 
   // ── Layer 3: Heuristic ──────────────────────────────────────────────
   const coverage = heuristicCoverage(torrentTitle)
-  coverageCache.set(cacheKey, coverage)
+  cacheCoverage(cacheKey, coverage)
   return coverage
 }
 

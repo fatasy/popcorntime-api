@@ -20,7 +20,8 @@ import { db } from '../../db'
 import { anime_franchise_entries, contents, content_torrents, torrents } from '../../types'
 import { resolveEpisodes, type EpisodeInfo } from '../torrent/episodes'
 import { classifySeasonCoverage, type SeasonCoverage } from '../torrent/season-coverage'
-import { extractQuality, hasPortugueseAudio } from '../../lib/parse'
+import { hasPortugueseAudio } from '../../lib/parse'
+import { extractQualityLabel } from '../torrent/quality'
 import { TRENDING_MAX_LIMIT, TRENDING_TYPES, getTrendingGroup, normalizeTrendingType } from './trending'
 import { jwtPlugin } from '../auth/jwt'
 import { resolveAuth } from '../auth/guard'
@@ -288,7 +289,7 @@ async function listContents(opts: ListOptions) {
     : []
   const primaryByContent = new Map(primaries.map((p) => [p.content_id, p]))
 
-  const data = rows.map((row) => ({ ...row, primary: primaryByContent.get(row.id) ? { ...primaryByContent.get(row.id), quality: extractQuality(primaryByContent.get(row.id)!.title) } : null }))
+  const data = rows.map((row) => ({ ...row, primary: primaryByContent.get(row.id) ? { ...primaryByContent.get(row.id), quality: extractQualityLabel(primaryByContent.get(row.id)!.title) } : null }))
   return { data, total }
 }
 
@@ -380,7 +381,7 @@ export const catalogRoutes = new Elysia()
       const linkedWithQuality = sortSourcesPtbrFirst(
         linked.map((t: any) => ({
           ...t,
-          quality: extractQuality(t.title),
+          quality: extractQualityLabel(t.title),
           ptbr_audio: hasPortugueseAudio(t.title ?? ''),
         })),
       )

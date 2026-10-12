@@ -9,13 +9,16 @@ export interface QualityInfo {
 // ─── Regex patterns (ordered: more specific first) ──────────────────────
 
 const RESOLUTIONS: [RegExp, string][] = [
-  [/\b2160p\b/i, '2160p'],
+  [/2160p/i, '2160p'],
   [/\b4k\b/i, '4K'],
   [/\buhd\b/i, '4K'],
-  [/\b1080p\b/i, '1080p'],
-  [/\b720p\b/i, '720p'],
-  [/\b480p\b/i, '480p'],
-  [/\b360p\b/i, '360p'],
+  [/1080p/i, '1080p'],
+  [/\b1080\b/i, '1080p'],
+  [/720p/i, '720p'],
+  [/\b720\b/i, '720p'],
+  [/480p/i, '480p'],
+  [/\b480\b/i, '480p'],
+  [/360p/i, '360p'],
 ]
 
 const SOURCES: [RegExp, string][] = [

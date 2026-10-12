@@ -10,6 +10,8 @@ import { consolidateAnimeFranchise } from '../anime/franchise'
 const TMDB_DELAY = 200 // ms between TMDB requests
 const JIKAN_DELAY = 350 // ms between Jikan requests
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
 type ContentUpdate = Partial<NewContent>
 
 function dateOnly(value?: string | null): string | null {
@@ -152,7 +154,7 @@ async function enrichViaTmdb(
   let results = force ? null : await cacheGet('tmdb', searchKey)
   if (results == null) {
     results = await tmdb.searchMulti(query)
-    await Bun.sleep(TMDB_DELAY)
+    await sleep(TMDB_DELAY)
     await cacheSet('tmdb', searchKey, results)
   }
   if (!Array.isArray(results) || results.length === 0) return null
@@ -173,7 +175,7 @@ async function enrichViaTmdb(
   let details = force ? null : await cacheGet('tmdb', detailKey)
   if (details == null) {
     details = pick.media_type === 'tv' ? await tmdb.getTV(pick.id) : await tmdb.getMovie(pick.id)
-    await Bun.sleep(TMDB_DELAY)
+    await sleep(TMDB_DELAY)
     await cacheSet('tmdb', detailKey, details)
   }
   return mapTmdb(details, pick.media_type)
@@ -203,7 +205,7 @@ async function enrichViaJikan(
   let results = force ? null : await cacheGet('jikan', key)
   if (results == null) {
     results = await mal.searchAnime(query)
-    await Bun.sleep(JIKAN_DELAY)
+    await sleep(JIKAN_DELAY)
     await cacheSet('jikan', key, results)
   }
   if (!Array.isArray(results) || results.length === 0) {
@@ -211,7 +213,7 @@ async function enrichViaJikan(
     const norm = normalizeTitle(query)
     if (norm && norm !== query) {
       results = await mal.searchAnime(norm)
-      await Bun.sleep(JIKAN_DELAY)
+      await sleep(JIKAN_DELAY)
       await cacheSet('jikan', `search:${norm}`, results)
     }
   }

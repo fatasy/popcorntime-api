@@ -3,6 +3,7 @@ import { db } from '../../db'
 import { contents, metadata_cache, type Content, type NewContent } from '../../types'
 import { normalizeTitle, parseRelease } from '../../lib/parse'
 import * as tmdb from './tmdb'
+import { resolveTmdbIdentity } from './identity'
 import * as omdb from './omdb'
 import * as mal from './myanimelist'
 import { consolidateAnimeFranchise } from '../anime/franchise'
@@ -151,25 +152,16 @@ async function enrichViaTmdb(
   force = false,
 ): Promise<ContentUpdate | null> {
   const searchKey = `multi:${query}:${content.year ?? ''}`
-  let results = force ? null : await cacheGet('tmdb', searchKey)
-  if (results == null) {
-    results = await tmdb.searchMulti(query)
-    await sleep(TMDB_DELAY)
-    await cacheSet('tmdb', searchKey, results)
-  }
-  if (!Array.isArray(results) || results.length === 0) return null
-
-  const wantTv = content.type === 'series'
-  let pick: any =
-    results.find((r: any) => (wantTv ? r.media_type === 'tv' : r.media_type === 'movie')) ??
-    results[0]
-  if (content.year) {
-    const byYear = results.find((r: any) => {
-      const d: string = r.release_date ?? r.first_air_date ?? ''
-      return d.startsWith(String(content.year))
-    })
-    if (byYear) pick = byYear
-  }
+  const pick = await resolveTmdbIdentity(content, query, async (title) => {
+    let results = force ? null : await cacheGet('tmdb', searchKey)
+    if (results == null) {
+      results = await tmdb.searchMulti(title)
+      await sleep(TMDB_DELAY)
+      await cacheSet('tmdb', searchKey, results)
+    }
+    return Array.isArray(results) ? results : []
+  })
+  if (!pick) return null
 
   const detailKey = `${pick.media_type}:${pick.id}`
   let details = force ? null : await cacheGet('tmdb', detailKey)
@@ -198,9 +190,18 @@ async function enrichViaOmdb(
 
 async function enrichViaJikan(
   query: string,
-  _content: Content,
+  content: Content,
   force = false,
 ): Promise<ContentUpdate | null> {
+  if (content.mal_id != null) {
+    const key = `anime:${content.mal_id}`
+    let anime = force ? null : await cacheGet('jikan', key)
+    if (anime == null) {
+      anime = await mal.getAnime(content.mal_id)
+      if (anime) await cacheSet('jikan', key, anime)
+    }
+    return anime ? mapJikan(anime) : null
+  }
   const key = `search:${query}`
   let results = force ? null : await cacheGet('jikan', key)
   if (results == null) {
@@ -266,6 +267,13 @@ export async function enrichContent(
 
   try {
     if (content.type === 'anime') {
+      // TMDB discovery/fallback already supplies an exact TV identity.
+      if (content.mal_id == null && content.tmdb_id != null) {
+        const viaTmdb = await enrichViaTmdb(cleaned, content, options.force)
+        if (!viaTmdb) return false
+        await applyUpdate(content.id, viaTmdb)
+        return true
+      }
       const viaJikan = await enrichViaJikan(cleaned, content, options.force)
       if (viaJikan) {
         await applyUpdate(content.id, viaJikan)
@@ -293,6 +301,9 @@ export async function enrichContent(
       await applyUpdate(content.id, viaTmdb)
       return true
     }
+
+    // A failed lookup for an existing ID must not relink another work via OMDb.
+    if (content.tmdb_id != null) return false
 
     // OMDb fallback
     const viaOmdb = await enrichViaOmdb(cleaned, content, options.force)

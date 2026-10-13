@@ -694,3 +694,13 @@ qualidade no player.
 O progresso de uma fonte HTTP usa chave estável `http:<id>`, `magnet: ""`,
 `fileIndex: -1` e os campos opcionais `streamId`/`streamUrl`. Os registros
 existentes de torrents continuam usando os mesmos campos e chaves anteriores.
+
+### Atualização da home e do catálogo
+
+O pipeline agendado a cada 30 minutos renova os rankings vencidos antes de executar coleta e manutenção. O cache de `/trending` vale uma hora; um GET com cache vencido devolve imediatamente a última lista e atualiza em segundo plano. A primeira consulta sem cache espera no máximo 1,2 segundo. `cache.fetched_at` e `cache.stale` informam a idade real da lista.
+
+Quando Jikan falha, a faixa de animes usa a ordem de popularidade do TMDB para animação japonesa com episódios exibidos nos últimos 30 dias. A resposta informa `source: "tmdb"`, `tmdb_id` e `source_list`; essa lista não é apresentada como ranking do MAL. As demais faixas mantêm a ordem do ranking diário do TMDB.
+
+`/catalog?sort=popular` prioriza o ranking persistido atual, inclusive nas categorias e gêneros; seeds continuam como desempate e fallback. `sort=rating` continua ordenando por nota. O pipeline também procura fontes de até seis títulos atuais sem torrents por execução, com intervalo de seis horas por título e sem consultar lançamentos futuros. Enriquecimento usa IDs externos conhecidos diretamente, evitando trocar a identidade da obra pela busca textual.
+
+Para executar apenas a renovação e o enriquecimento, sem a manutenção de torrents: `bun run src/jobs/refresh-home.ts`.

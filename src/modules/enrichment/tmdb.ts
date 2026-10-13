@@ -206,3 +206,23 @@ export function discoverAnime(pages = 2) {
     sort_by: 'popularity.desc',
   })
 }
+
+/** Anime with episodes aired recently; the provider's popularity order is retained. */
+export async function getAiringAnime(pages = 2): Promise<TmdbDiscoverItem[]> {
+  const today = new Date()
+  const since = new Date(today.getTime() - 30 * 86400_000)
+  const out: TmdbDiscoverItem[] = []
+  for (let page = 1; page <= pages; page++) {
+    const data = await tmdbGet<{ results?: TmdbDiscoverItem[]; total_pages?: number }>('/discover/tv', {
+      page, language: 'pt-BR', include_adult: 'false',
+      with_genres: '16', with_original_language: 'ja',
+      'air_date.gte': since.toISOString().slice(0, 10),
+      'air_date.lte': today.toISOString().slice(0, 10),
+      sort_by: 'popularity.desc',
+    })
+    if (!data.results?.length) break
+    out.push(...data.results)
+    if (data.total_pages != null && page >= data.total_pages) break
+  }
+  return out
+}

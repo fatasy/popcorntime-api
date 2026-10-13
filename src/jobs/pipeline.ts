@@ -7,6 +7,8 @@ import { groupUngrouped } from '../modules/grouping'
 import { mergeByTmdbId, mergeByMalId } from '../modules/grouping/merge-series'
 import { runDiscovery } from './discover'
 import { preResolveTorrentMetadata } from '../modules/torrent/pre-resolve'
+import { refreshTrendingCatalog } from '../modules/catalog/trending'
+import { collectHomeSources } from './collect-home-sources'
 
 const CATEGORIES: Category[] = ['movies', 'series', 'anime']
 
@@ -22,6 +24,13 @@ const CATEGORIES: Category[] = ['movies', 'series', 'anime']
  */
 export async function runPipeline(): Promise<void> {
   console.log('=== PopcornTime pipeline start ===')
+
+  console.log('\n[home] Refreshing catalog rankings…')
+  try {
+    await refreshTrendingCatalog()
+  } catch (err) {
+    console.error('[pipeline] catalog ranking refresh failed:', err)
+  }
 
   // Step 0: Discovery (opt-in via PIPELINE_DISCOVER=1)
   if (process.env.PIPELINE_DISCOVER === '1') {
@@ -82,6 +91,12 @@ export async function runPipeline(): Promise<void> {
     if (upgraded.length) console.log(`[quality] upgraded ${upgraded.length} recent movie(s)`)
   } catch (err) {
     console.error('[pipeline] movie quality upgrade failed:', err)
+  }
+
+  try {
+    newTorrents += await collectHomeSources()
+  } catch (err) {
+    console.error('[pipeline] current-title source collection failed:', err)
   }
 
   console.log('\n[3/3] Grouping ungrouped torrents…')

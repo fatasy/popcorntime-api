@@ -1,9 +1,10 @@
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { contents, content_torrents, metadata_cache, torrents, type Content } from '../../types'
+import { anime_franchise_entries, contents, content_torrents, metadata_cache, torrents, type Content } from '../../types'
 import { extractQuality } from '../../lib/parse'
-import { getTrendingDaily, tmdbImage, type TmdbDiscoverItem } from '../enrichment/tmdb'
+import { getAiringAnime, getTrendingDaily, tmdbImage, type TmdbDiscoverItem } from '../enrichment/tmdb'
 import { getTopAiringRanking, type JikanAnime } from '../enrichment/myanimelist'
+import { BackgroundRefreshQueue, readExternalCatalog } from '../../lib/background-refresh'
 
 /**
  * Faixa diária "em alta" — ranking EXTERNO completo, na ordem do provedor,
@@ -16,13 +17,16 @@ import { getTopAiringRanking, type JikanAnime } from '../enrichment/myanimelist'
  *    ATENÇÃO: o Jikan NÃO publica ranking diário de anime; é o ranking dos
  *    títulos atualmente em exibição — não chamar de tendência diária.
  *
- * Ciclo de atualização (1x/dia, preguiçoso):
- *   1. no primeiro pedido após 24h: busca a lista do provedor;
+ * Ciclo de atualização (cache de 1h, renovado pelo pipeline a cada 30min):
+ *   1. o job renova listas vencidas, mesmo sem ninguém abrir o app;
  *   2. para CADA item, casa/cria o registro em `contents` pelo ID externo
  *      (+ tipo) e completa os metadados (título, ano, IDs, poster/backdrop,
  *      overview, rating);
  *   3. grava a lista COM os ids internos em `metadata_cache` e serve dali.
- * Enquanto o cache vale (24h) nenhuma chamada externa acontece. Se o provedor
+ * Enquanto o cache vale (1h) nenhuma chamada externa acontece. Pedidos com
+ * cache vencido recebem a lista anterior e iniciam refresh em segundo plano.
+ * Anime usa TMDB (animação japonesa com episódios nos últimos 30 dias) quando
+ * Jikan falha, com fonte e IDs do TMDB explicitamente identificados. Se o provedor
  * falhar, serve o último ranking válido persistido (`cache.stale: true`) — com
  * os ids internos já resolvidos — ou `available: false` se nunca houve lista.
  *
@@ -43,8 +47,8 @@ export const TRENDING_TYPES: TrendingType[] = ['movie', 'series', 'anime']
 const CACHE_SOURCE = 'trending'
 /** Versão do payload em cache: mudou o DTO, o cache antigo é ignorado. */
 const CACHE_VERSION = 3
-/** Uma atualização por dia: a lista persistida vale 24h (refresh preguiçoso). */
-export const TRENDING_REFRESH_HOURS = 24
+/** The scheduled pipeline refreshes rankings once their one-hour TTL expires. */
+export const TRENDING_REFRESH_HOURS = 1
 /** Depois de uma falha, espera isso antes de bater no provedor de novo. */
 const ERROR_TTL_MINUTES = 5
 /** Teto de itens devolvidos por faixa (o app usa 10). */
@@ -210,7 +214,18 @@ function jikanItem(item: JikanAnime): TrendingProviderItem {
 }
 
 function externalIdOf(item: TrendingProviderItem): number | null {
-  return item.type === 'anime' ? item.mal_id : item.tmdb_id
+  return item.source === 'jikan' ? item.mal_id : item.tmdb_id
+}
+
+/** Both providers publish their own order; never label the fallback as a MAL ranking. */
+export async function fetchAnimeRanking(): Promise<TrendingProviderItem[]> {
+  try {
+    const items = dedupe((await getTopAiringRanking(25, 5_000)).map(jikanItem))
+    if (items.length) return items
+  } catch (error) {
+    console.warn('[trending] Jikan unavailable, trying TMDB:', (error as Error).message)
+  }
+  return dedupe((await getAiringAnime(2)).map((item) => ({ ...tmdbItem('tv', item), type: 'anime' })))
 }
 
 /** Remove IDs repetidos preservando a PRIMEIRA posição (ordem do provedor). */
@@ -255,7 +270,7 @@ const PROVIDERS: Record<TrendingType, ProviderConfig> = {
     source_list: 'top/anime?filter=airing',
     source_url: 'https://myanimelist.net',
     ranking_window: 'airing',
-    fetch: async () => dedupe((await getTopAiringRanking(25)).map(jikanItem)),
+    fetch: fetchAnimeRanking,
   },
 }
 
@@ -279,8 +294,8 @@ export function normalizeTrendingType(value: string): TrendingType | null {
 // ─── Sincronização com o catálogo interno (`contents`) ─────────────────────
 
 /** Coluna do ID externo correspondente ao tipo. */
-function externalIdColumn(type: TrendingType) {
-  return type === 'anime' ? contents.mal_id : contents.tmdb_id
+function externalIdColumn(source: TrendingProviderItem['source']) {
+  return source === 'jikan' ? contents.mal_id : contents.tmdb_id
 }
 
 /**
@@ -296,11 +311,11 @@ function canonicalFirst() {
 }
 
 /** Todos os registros do tipo com esse ID externo (normalmente 1). */
-async function findByExternalId(type: TrendingType, externalId: number): Promise<Content[]> {
+async function findByExternalId(item: TrendingProviderItem, externalId: number): Promise<Content[]> {
   return db
     .select()
     .from(contents)
-    .where(and(eq(contents.type, type), eq(externalIdColumn(type), externalId)))
+    .where(and(eq(contents.type, item.type), eq(externalIdColumn(item.source), externalId)))
     .orderBy(...canonicalFirst())
 }
 
@@ -318,9 +333,10 @@ async function findByTitleYear(item: TrendingProviderItem): Promise<Content | nu
     .where(
       and(
         eq(contents.type, item.type),
-        eq(contents.title, title.slice(0, MAX_TITLE)),
+        or(eq(contents.title, title.slice(0, MAX_TITLE)),
+          item.original_title ? eq(contents.original_title, item.original_title.slice(0, MAX_TITLE)) : undefined),
         eq(contents.year, item.year),
-        isNull(externalIdColumn(item.type)),
+        isNull(externalIdColumn(item.source)),
       ),
     )
     .orderBy(...canonicalFirst())
@@ -345,13 +361,14 @@ async function updateFromProvider(
   if (item.title) patch.title = item.title.slice(0, MAX_TITLE)
   if (item.original_title) patch.original_title = item.original_title.slice(0, MAX_TITLE)
   if (item.year != null) patch.year = item.year
+  if (item.release_date) patch.release_date = item.release_date
   if (item.poster_url) patch.poster_url = item.poster_url
   if (item.backdrop_url) patch.backdrop_url = item.backdrop_url
   if (item.rating != null) patch.rating = String(item.rating)
   if (item.overview && row.synopsis == null) patch.synopsis = item.overview
   if (linkExternalId) {
-    if (item.type === 'anime' && item.mal_id != null) patch.mal_id = item.mal_id
-    if (item.type !== 'anime' && item.tmdb_id != null) patch.tmdb_id = item.tmdb_id
+    if (item.mal_id != null) patch.mal_id = item.mal_id
+    if (item.tmdb_id != null) patch.tmdb_id = item.tmdb_id
   }
   await db.update(contents).set(patch).where(eq(contents.id, row.id))
 }
@@ -371,12 +388,13 @@ async function insertFromProvider(item: TrendingProviderItem): Promise<number | 
       title: title.slice(0, MAX_TITLE),
       original_title: item.original_title ? item.original_title.slice(0, MAX_TITLE) : null,
       year: item.year,
+      release_date: item.release_date,
       synopsis: item.overview,
       rating: item.rating != null ? String(item.rating) : null,
       poster_url: item.poster_url,
       backdrop_url: item.backdrop_url,
-      tmdb_id: item.type === 'anime' ? null : item.tmdb_id,
-      mal_id: item.type === 'anime' ? item.mal_id : null,
+      tmdb_id: item.tmdb_id,
+      mal_id: item.mal_id,
       enriched_at: null,
     })
     .returning({ id: contents.id })
@@ -394,12 +412,17 @@ async function syncItem(item: TrendingProviderItem): Promise<number | null> {
   const externalId = externalIdOf(item)
   if (externalId == null) return null
 
-  const matches = await findByExternalId(item.type, externalId)
+  if (item.mal_id != null) {
+    const [entry] = await db.select({ id: anime_franchise_entries.content_id })
+      .from(anime_franchise_entries).where(eq(anime_franchise_entries.mal_id, item.mal_id)).limit(1)
+    if (entry) return entry.id
+  }
+  const matches = await findByExternalId(item, externalId)
   if (matches.length > 0) {
     // Duplicatas do mesmo ID externo: atualiza todas (metadado consistente) e
     // devolve o canônico (mais torrents / menor id).
     for (const row of matches) await updateFromProvider(row, item)
-    return matches[0]!.id
+    return matches[0]!.canonical_content_id ?? matches[0]!.id
   }
 
   const byTitle = await findByTitleYear(item)
@@ -453,7 +476,7 @@ async function attachPrimaries(ids: number[]): Promise<Map<number, TrendingPrima
   }
 }
 
-// ─── Persistência/refresh diário (`metadata_cache` JSONB) ──────────────────
+// ─── Persistência/refresh (`metadata_cache` JSONB) ────────────────────────
 
 interface CachePayload {
   v?: number
@@ -616,10 +639,12 @@ async function refresh(
  *   1. lista com menos de `TRENDING_REFRESH_HOURS` -> serve a persistida (sem rede);
  *   2. provedor falhou nos últimos `ERROR_TTL_MINUTES` -> serve a persistida
  *      (stale) sem tentar de novo (evita martelar catálogo fora do ar);
- *   3. caso contrário (primeiro pedido após 24h) -> busca, sincroniza e persiste.
+ *   3. job aguarda renovação; GET serve stale e renova em segundo plano.
  * Nunca lança: falha vira `available:false` + `error` (ou ranking anterior stale).
  */
-async function resolveProviderList(cfg: ProviderConfig): Promise<ProviderListResult> {
+const refreshQueue = new BackgroundRefreshQueue(3, ERROR_TTL_MINUTES * 60_000)
+
+async function resolveProviderList(cfg: ProviderConfig, waitForRefresh = false): Promise<ProviderListResult> {
   const ttlSeconds = TRENDING_REFRESH_HOURS * 3600
   const [good, failed] = await Promise.all([
     readCache(listKey(cfg.type)),
@@ -636,7 +661,7 @@ async function resolveProviderList(cfg: ProviderConfig): Promise<ProviderListRes
     }
   }
 
-  if (failed.ageSeconds != null && failed.ageSeconds < ERROR_TTL_MINUTES * 60) {
+  if (!waitForRefresh && failed.ageSeconds != null && failed.ageSeconds < ERROR_TTL_MINUTES * 60) {
     return {
       items: goodItems ?? [],
       available: goodItems != null,
@@ -645,7 +670,19 @@ async function resolveProviderList(cfg: ProviderConfig): Promise<ProviderListRes
     }
   }
 
-  return refresh(cfg, good, ttlSeconds)
+  const saved: ProviderListResult = {
+    items: goodItems ?? [], available: goodItems != null, error: null,
+    cache: cacheInfo(good, ttlSeconds, goodItems != null, true),
+  }
+  const result = await readExternalCatalog({
+    key: cfg.type, queue: refreshQueue, ttlMs: ttlSeconds * 1000,
+    read: async () => goodItems == null ? null : {
+      value: saved, cachedAt: new Date(Date.now() - (good.ageSeconds ?? ttlSeconds) * 1000),
+    },
+    refresh: () => refresh(cfg, good, ttlSeconds),
+    force: waitForRefresh, coldWaitMs: 1200,
+  })
+  return result ?? { ...saved, error: 'ranking em atualização' }
 }
 
 // ─── Montagem da faixa ─────────────────────────────────────────────────────
@@ -655,26 +692,28 @@ async function resolveProviderList(cfg: ProviderConfig): Promise<ProviderListRes
  * INTEIRA (cortada só pelo `limit`), na ordem original, com o id interno do
  * registro sincronizado e o torrent primário atual (quando existir).
  */
-export async function getTrendingGroup(type: TrendingType, limit = 10): Promise<TrendingGroup> {
+export async function getTrendingGroup(type: TrendingType, limit = 10, waitForRefresh = false): Promise<TrendingGroup> {
   const cfg = PROVIDERS[type]
   const cappedLimit = Math.min(TRENDING_MAX_LIMIT, Math.max(1, Math.trunc(limit)))
-  const provider = await resolveProviderList(cfg)
+  const provider = await resolveProviderList(cfg, waitForRefresh)
   const ranking = provider.items.slice(0, cappedLimit)
+  const source = provider.items[0]?.source ?? cfg.source
+  const animeFallback = type === 'anime' && source === 'tmdb'
 
   const contentIds = ranking.flatMap((item) => (item.id != null ? [item.id] : []))
   const primaries = await attachPrimaries(contentIds)
 
   return {
     title: cfg.title,
-    source: cfg.source,
+    source,
     type,
     data: ranking.map((item, index) => ({
       ...item,
       rank: index + 1,
       primary: item.id != null ? (primaries.get(item.id) ?? null) : null,
     })),
-    source_list: cfg.source_list,
-    source_url: cfg.source_url,
+    source_list: animeFallback ? 'discover/tv?with_genres=16&with_original_language=ja&air_date=last30days&sort_by=popularity.desc' : cfg.source_list,
+    source_url: source === 'tmdb' ? 'https://www.themoviedb.org' : cfg.source_url,
     ranking_window: cfg.ranking_window,
     available: provider.available,
     error: provider.error,
@@ -685,4 +724,14 @@ export async function getTrendingGroup(type: TrendingType, limit = 10): Promise<
     cache: provider.cache,
     generated_at: new Date().toISOString(),
   }
+}
+
+/** Called by the existing ingestion schedule, before slower torrent maintenance. */
+export async function refreshTrendingCatalog(): Promise<void> {
+  const results = await Promise.all(TRENDING_TYPES.map((type) => getTrendingGroup(type, 20, true)))
+  for (const result of results) {
+    console.log(`[trending] ${result.type}: ${result.provider_total} items, source=${result.source}, fetched=${result.cache.fetched_at}, stale=${result.cache.stale}`)
+    if (result.error) console.warn(`[trending] ${result.type}: ${result.error}`)
+  }
+  if (results.some((result) => !result.available)) throw new Error('One or more catalog rankings are unavailable')
 }

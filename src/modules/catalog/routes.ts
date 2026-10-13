@@ -30,6 +30,7 @@ import { resolveCanonicalContentId } from '../anime/franchise'
 import { fillGaps } from '../collection/fill-gaps'
 import { importExternalCatalog, searchExternalCatalog } from './external'
 import { countHttpEpisodeSources, refreshAnimeHttpSources } from '../streams/service'
+import { CURRENT_RANK_SQL } from './popularity'
 
 // Evita que dois cliques (ou dois dispositivos) disparem o mesmo crawler em
 // paralelo para um título. Todos aguardam a execução já em curso.
@@ -253,7 +254,7 @@ async function listContents(opts: ListOptions) {
   const where = opts.filters.length ? and(...opts.filters) : undefined
   const offset = (opts.page - 1) * opts.limit
 
-  // Popularity sort: order by primary torrent seeds (content with most seeds first)
+  // Current external rankings first; primary torrent seeds remain the fallback.
   const isPopular = opts.sort === 'popular'
   const sortCol = isPopular ? POPULARITY_SQL : (SORT_COLUMNS[opts.sort as SortKey] ?? contents.created_at)
   const orderBy = opts.order === 'asc' ? asc(sortCol) : desc(sortCol)
@@ -262,7 +263,7 @@ async function listContents(opts: ListOptions) {
     .select()
     .from(contents)
     .where(where)
-    .orderBy(orderBy, desc(contents.id))
+    .orderBy(...(isPopular ? [opts.order === 'asc' ? asc(CURRENT_RANK_SQL) : desc(CURRENT_RANK_SQL)] : []), orderBy, desc(contents.id))
     .limit(opts.limit)
     .offset(offset)
 

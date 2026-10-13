@@ -475,12 +475,12 @@ export async function getSeasonNow(): Promise<JikanAnime[]> {
  * LANÇA em falha de HTTP (diferente de `getTopAiring`, que devolve [] e serve o
  * job de descoberta): a faixa precisa distinguir "Jikan fora do ar" de "vazio".
  */
-export async function getTopAiringRanking(limit = 25): Promise<JikanAnime[]> {
+export async function getTopAiringRanking(limit = 25, timeoutMs = 15_000): Promise<JikanAnime[]> {
   const url = new URL(BASE + '/top/anime')
   url.searchParams.set('filter', 'airing')
   url.searchParams.set('limit', String(limit))
   url.searchParams.set('sfw', 'true')
-  const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
   if (!res.ok) throw new Error(`Jikan top/anime HTTP ${res.status}`)
   const data = (await res.json()) as { data?: JikanAnime[] }
   return data.data ?? []

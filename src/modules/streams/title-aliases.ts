@@ -1,5 +1,11 @@
+/** Thousands separators in a title vary between catalogs and release names. */
+function normalizeTitleNumbers(value: string): string {
+  return value.replace(/(?<![\p{L}\p{N}])\d{1,3}(?:[.,]\d{3})+(?![\p{L}\p{N}])/gu,
+    (number) => number.replace(/[.,]/g, ''))
+}
+
 function key(value: string): string {
-  return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  return normalizeTitleNumbers(value).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
 
 /** A provider label can contain two actual names; season qualifiers remain intact. */
@@ -36,7 +42,7 @@ export function animeSourceQueries(titles: string[], limit = 6): string[] {
   const plain = expanded.filter((title) => !/[\[(]/.test(title))
   const queries = plain.length ? plain : expanded
   return [...queries.filter((title) => /[a-z]/i.test(title)),
-    ...queries.filter((title) => !/[a-z]/i.test(title))].slice(0, limit)
+    ...queries.filter((title) => !/[a-z]/i.test(title))].slice(0, limit).map(normalizeTitleNumbers)
 }
 
 export function animeTorrentQueries(titles: string[], limit = 4): string[] {
@@ -50,7 +56,7 @@ export function animeTorrentQueries(titles: string[], limit = 4): string[] {
 
 /** Search engines can return similarly named works; require a complete known title. */
 export function animeTorrentMatchesTitle(release: string, titles: string[]): boolean {
-  const normalized = release.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  const normalized = normalizeTitleNumbers(release).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
     .replace(/[^\p{L}\p{N}\[\]()|–-]+/gu, ' ').replace(/\s+/g, ' ')
   return animeTorrentQueries(titles, 100).some((title) => {
     const escaped = key(title).split(' ').map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s–-]+')

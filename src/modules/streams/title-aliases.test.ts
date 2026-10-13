@@ -54,3 +54,20 @@ test('standard fansub separators and title punctuation remain valid', () => {
   assert.equal(animeTorrentMatchesTitle('[Group] Example 2 - 01 [1080p]', ['Example']), false)
   assert.equal(animeTorrentMatchesTitle('[Group] Xian Ni - 01 [1080p]', ['Renegade Immortal', 'Xian Ni']), true)
 })
+
+test('grouped title numbers produce the query used by actual donghua releases', () => {
+  const variants = ['100.000 Years of Refining Qi', '100,000 Years of Refining Qi', '100000 Years of Refining Qi']
+  assert.equal(expandAnimeTitleAliases(variants).length, 1)
+  assert.deepEqual(animeTorrentQueries(variants), ['100000 Years of Refining Qi'])
+  for (const title of variants) {
+    assert.equal(animeTorrentMatchesTitle('100000.Years.of.Refining.Qi.(Lian.Qi.Shi.Wan.Nian).S01E001-S01E193.(EFC) Chinese.Donghua.EngHardSubs', [title]), true)
+    assert.equal(animeTorrentMatchesTitle('100,000 Years of Refining Qi S01E001 [1080p]', [title]), true)
+    assert.equal(animeTorrentMatchesTitle('10000 Years of Refining Qi S01E001', [title]), false)
+  }
+})
+
+test('numeric title normalization preserves decimals and episode or resolution markers', () => {
+  assert.deepEqual(animeSourceQueries(['1.000.000 Years', 'Example 2.5', 'Example S01E001', 'Example 1920.1080']),
+    ['1000000 Years', 'Example 2.5', 'Example S01E001', 'Example 1920.1080'])
+  assert.equal(animeTorrentMatchesTitle('100000 Years of Refining Qi S01E193 [1080p]', ['100.000 Years of Refining Qi']), true)
+})

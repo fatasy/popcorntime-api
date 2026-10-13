@@ -30,8 +30,9 @@ import { resolveCanonicalContentId } from '../anime/franchise'
 import { fillGaps } from '../collection/fill-gaps'
 import { importExternalCatalog, searchExternalCatalog } from './external'
 import { countHttpEpisodeSources, refreshAnimeHttpSources } from '../streams/service'
-import { CHINESE_FANTASY_RANK_SQL, CURRENT_RANK_SQL } from './popularity'
+import { CHINESE_FANTASY_RANK_SQL, CURRENT_RANK_SQL, DORAMA_RANK_SQL } from './popularity'
 import { chineseFantasyFilterGenres } from './chinese-fantasy'
+import { isDoramaFilter } from './dorama'
 
 // Evita que dois cliques (ou dois dispositivos) disparem o mesmo crawler em
 // paralelo para um título. Todos aguardam a execução já em curso.
@@ -185,6 +186,7 @@ const GENRE_ALIASES: Record<string, string[]> = {
 
 /** Condição "o conteúdo tem o gênero pedido (ou um sinônimo em outro idioma)". */
 function genreFilter(genre: string): SQL {
+  if (isDoramaFilter(genre)) return sql`${contents.type} = 'series' AND 'Dorama' = ANY(${contents.genres})`
   const aliases = chineseFantasyFilterGenres(genre) ?? GENRE_ALIASES[genre] ?? [genre]
   const ors = aliases.map((g) => sql`${g} = ANY(${contents.genres})`)
   return ors.length === 1 ? ors[0]! : or(...ors)!
@@ -258,7 +260,8 @@ async function listContents(opts: ListOptions) {
 
   // Current external rankings first; primary torrent seeds remain the fallback.
   const isPopular = opts.sort === 'popular'
-  const ranking = chineseFantasyFilterGenres(opts.genre ?? '') ? CHINESE_FANTASY_RANK_SQL : CURRENT_RANK_SQL
+  const ranking = isDoramaFilter(opts.genre ?? '') ? DORAMA_RANK_SQL
+    : chineseFantasyFilterGenres(opts.genre ?? '') ? CHINESE_FANTASY_RANK_SQL : CURRENT_RANK_SQL
   const sortCol = isPopular ? POPULARITY_SQL : (SORT_COLUMNS[opts.sort as SortKey] ?? contents.created_at)
   const orderBy = opts.order === 'asc' ? asc(sortCol) : desc(sortCol)
 

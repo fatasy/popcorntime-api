@@ -5,6 +5,7 @@ import { normalizeTitle, parseRelease } from '../../lib/parse'
 import * as tmdb from './tmdb'
 import { resolveTmdbIdentity } from './identity'
 import { chineseFantasyGenres, isChineseAnimation, preserveChineseFantasyGenres } from '../catalog/chinese-fantasy'
+import { doramaGenres, preserveDoramaGenres } from '../catalog/dorama'
 import * as omdb from './omdb'
 import * as mal from './myanimelist'
 import { consolidateAnimeFranchise } from '../anime/franchise'
@@ -75,7 +76,7 @@ export function mapTmdb(d: any, mediaType: string): ContentUpdate {
   const title: string | undefined = d.title ?? d.name
   const originalReleaseDate: string = d.release_date ?? d.first_air_date ?? ''
   const year = originalReleaseDate ? parseInt(originalReleaseDate.slice(0, 4), 10) || null : null
-  const genres = [...new Set([...(d.genres ?? []).map((g: any) => g.name).filter(Boolean), ...chineseFantasyGenres(d)])]
+  const genres = [...new Set([...(d.genres ?? []).map((g: any) => g.name).filter(Boolean), ...chineseFantasyGenres(d), ...doramaGenres(d, mediaType)])]
   const cast = (d.credits?.cast ?? []).slice(0, 10).map((c: any) => c.name).filter(Boolean)
   const director = (d.credits?.crew ?? []).find((c: any) => c.job === 'Director')?.name ?? null
   const country =
@@ -226,7 +227,8 @@ async function enrichViaJikan(
 
 async function applyUpdate(id: number, update: ContentUpdate): Promise<void> {
   const [current] = await db.select({ genres: contents.genres }).from(contents).where(eq(contents.id, id)).limit(1)
-  if (update.genres !== undefined) update.genres = preserveChineseFantasyGenres(current?.genres ?? null, update.genres)
+  if (update.genres !== undefined) update.genres = preserveDoramaGenres(current?.genres ?? null,
+    preserveChineseFantasyGenres(current?.genres ?? null, update.genres))
   // If synopsis_raw is already set, the content was translated.
   // Redirect any synopsis update to synopsis_raw to preserve the Portuguese translation.
   if (update.synopsis) {

@@ -714,3 +714,9 @@ O job de descoberta sincroniza até duas páginas por tipo de produção a cada 
 ### Nomes alternativos na busca de fontes de anime
 
 A coleta separa nomes compostos como `My Senior Brother Is Too Steady [Shixiong A Shixiong]`, consulta aliases de TV confirmados pelo TMDB e mantém qualificadores de temporada/parte. Nomes identificados como título da obra literária não são usados como aliases da animação. Resultados do Nyaa passam por comparação do título completo, para não vincular obras com nomes parecidos; pacotes encontrados na busca principal também são aceitos, inclusive intervalos com três dígitos por episódio.
+
+### Dorama
+
+`GET /catalog?type=series&genre=Dorama` reúne séries com atores da Coreia do Sul, Japão, China, Taiwan, Hong Kong e Tailândia. Origem, tipo de programa e gêneros do TMDB classificam a categoria, excluindo animação, documentários, notícias, reality e talk shows. `genre=Doramas` também é aceito.
+
+O job de descoberta renova a categoria a cada seis horas, mantendo IDs, traduções e vínculos de fontes existentes. A ordem de popularidade usa o ranking da descoberta; títulos sem fontes continuam visíveis. Para antecipar a atualização: `bun run src/jobs/dorama.ts --force`.

@@ -1,5 +1,6 @@
 import { env } from '../../env'
 import { CHINESE_FANTASY_KEYWORD_IDS } from '../catalog/chinese-fantasy'
+import { DORAMA_COUNTRIES, DORAMA_EXCLUDED_GENRES } from '../catalog/dorama'
 
 const BASE = 'https://api.themoviedb.org/3'
 const IMAGE_BASE = 'https://image.tmdb.org/t/p'
@@ -248,4 +249,15 @@ export async function discoverChineseFantasy(animated: boolean, pages = 2): Prom
     if (data.total_pages != null && page >= data.total_pages) break
   }
   return out
+}
+
+/** Each origin has its own page so one country's popular titles cannot hide the others. */
+export async function discoverDorama(pagesPerCountry = 1): Promise<TmdbDiscoverItem[]> {
+  const groups = await Promise.all(DORAMA_COUNTRIES.map((country) => discoverPaginated('/discover/tv', pagesPerCountry, {
+    with_origin_country: country, with_type: '2|4',
+    without_genres: DORAMA_EXCLUDED_GENRES.join(','), include_adult: 'false',
+    'first_air_date.lte': new Date().toISOString().slice(0, 10), sort_by: 'popularity.desc',
+  })))
+  return [...new Map(groups.flat().map((item) => [item.id, item])).values()]
+    .sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))
 }

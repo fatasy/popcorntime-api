@@ -17,6 +17,7 @@ import { getSeasonNow, getTopAiring } from '../modules/enrichment/myanimelist'
 import type { JikanAnime } from '../modules/enrichment/myanimelist'
 import { consolidateAnimeFranchise } from '../modules/anime/franchise'
 import { syncChineseFantasyCatalog } from './chinese-fantasy'
+import { syncDoramaCatalog } from './dorama'
 
 // ─── helpers ────────────────────────────────────────────────────────
 
@@ -380,6 +381,8 @@ export async function runDiscovery(): Promise<{
 
   try { await syncChineseFantasyCatalog() }
   catch (error) { console.error('[discover] Chinese fantasy failed:', (error as Error).message) }
+  try { await syncDoramaCatalog() }
+  catch (error) { console.error('[discover] Dorama failed:', (error as Error).message) }
 
   let totalTorrents = 0
   let totalMovies = 0

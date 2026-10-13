@@ -28,3 +28,16 @@ export const CHINESE_FANTASY_RANK_SQL = sql`COALESCE((
     AND ranked.id = ${contents.id}::text
   ORDER BY ranked.position LIMIT 1
 ), 0)`
+
+export const DORAMA_RANK_SQL = sql`COALESCE((
+  SELECT 10000 - ranked.position::int
+  FROM metadata_cache mc
+  CROSS JOIN LATERAL jsonb_array_elements_text(
+    CASE WHEN jsonb_typeof(mc.response->'ids') = 'array'
+      THEN mc.response->'ids' ELSE '[]'::jsonb END
+  ) WITH ORDINALITY AS ranked(id, position)
+  WHERE mc.source = 'dorama' AND mc.lookup_key = 'catalog:v1'
+    AND mc.cached_at > now() - interval '7 days'
+    AND ranked.id = ${contents.id}::text
+  ORDER BY ranked.position LIMIT 1
+), 0)`

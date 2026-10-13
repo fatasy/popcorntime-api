@@ -4,6 +4,7 @@ import { anime_franchise_entries, contents, content_torrents, torrents, torrent_
 import { mergeHttpEpisodeSources, type HttpEpisodeSource } from '../streams/episodes'
 import type { JikanEpisode } from '../enrichment/myanimelist'
 import { cachedAnimeEpisodes, cachedTV, cachedSeasonEpisodes } from './catalog-cache'
+import { indexedPackEpisodes } from './pack-files'
 import { BackgroundRefreshQueue } from '../../lib/background-refresh'
 import * as aniskip from '../enrichment/aniskip'
 import { parseRelease, hasPortugueseAudio } from '../../lib/parse'
@@ -336,7 +337,7 @@ export async function resolveEpisodes(
   let externalImdbId: string | null = null
   if (content.tmdb_id) {
     try {
-      const resolved = await resolveWithTmdb(contentId, content.tmdb_id, linked, fallbackArt, !!options.forceExternal)
+      const resolved = await resolveWithTmdb(contentId, content.tmdb_id, linked, fallbackArt, !!options.forceExternal, content.type === 'anime')
       episodes = resolved.episodes
       tmdbRecords = resolved.tmdbRecords
       externalImdbId = resolved.externalImdbId
@@ -425,6 +426,7 @@ async function resolveWithTmdb(
   linked: LinkedTorrent[],
   fallbackArt: string | null,
   forceExternal = false,
+  isAnime = false,
 ): Promise<{
   episodes: EpisodeInfo[]
   tmdbRecords: TmdbEpisodeRecord[]
@@ -518,6 +520,21 @@ async function resolveWithTmdb(
 
   for (const t of linked) {
     const coverage = coverageResults.get(t.torrent_id)
+
+    if (t.episode == null) {
+      const indexed = indexedPackEpisodes(t.file_list, {
+        linkedSeason: t.season, singleSeasonAnime: isAnime && seasons.filter((season: any) => season.season_number > 0).length === 1,
+        isEpisodeFile, episodeNumber: episodeNumberFromFileName,
+      })
+      if (indexed) {
+        for (const file of indexed) {
+          const key = `${file.season}|${file.episode}`
+          if (!tmdbEpisodes.has(key)) continue
+          episodeMap.get(key)!.push(makeEpisodeTorrent(t, { file_index: file.fileIndex, inferred: false }))
+        }
+        continue
+      }
+    }
 
     if (t.season == null) {
       // No season info in content_torrents — try coverage

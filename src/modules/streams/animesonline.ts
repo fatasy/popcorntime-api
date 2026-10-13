@@ -1,5 +1,6 @@
 import { load } from 'cheerio'
 import { normalizeAnimeTitle, publicMediaUrl } from './animesdigital'
+import { animeSourceQueries } from './title-aliases'
 import type { AnimeAudioType, AnimeHttpEpisode, AnimeHttpRequest, ResolvedHttpStream } from './provider-types'
 
 export const ANIMESONLINE_BASE = 'https://animesonline.cloud'
@@ -115,7 +116,7 @@ export function parseAnimesOnlineEpisodes(html: string, hit: AnimeHit): AnimeHtt
 
 export async function discoverAnimesOnline(request: AnimeHttpRequest, signal?: AbortSignal): Promise<AnimeHttpEpisode[]> {
   const hits = new Map<string, AnimeHit>()
-  for (const title of [...new Set(request.titles.filter(Boolean))].slice(0, 3)) {
+  for (const title of animeSourceQueries(request.titles)) {
     // Search results are paginated and may place the dubbed edition on a later
     // page. A separate dubbed query keeps both editions discoverable.
     for (const query of [title, `${title} dublado`]) {

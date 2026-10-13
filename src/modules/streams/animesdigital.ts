@@ -1,5 +1,6 @@
 import { load } from 'cheerio'
 import type { AnimeHttpEpisode } from './provider-types'
+import { animeSourceQueries } from './title-aliases'
 export type { AnimeHttpEpisode } from './provider-types'
 
 export const ANIMESDIGITAL_BASE = 'https://animesdigital.org'
@@ -144,7 +145,7 @@ export function extractAnimeStream(html: string, pageUrl: string): { url: string
 }
 
 export async function discoverAnimesDigital(titles: string[], targetEpisode?: number, signal?: AbortSignal): Promise<AnimeHttpEpisode[]> {
-  const queries = [...new Set(titles.filter(Boolean))].slice(0, 3)
+  const queries = animeSourceQueries(titles)
   let hits: ReturnType<typeof parseAnimeSearch> = []
   for (const title of queries) {
     const search = await readHtml(`${ANIMESDIGITAL_BASE}/pesquisa/${encodeURIComponent(title)}/`, signal)

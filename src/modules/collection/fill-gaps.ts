@@ -9,6 +9,8 @@ import { fetchEztvByImdb } from './sources/eztv'
 import { searchSolidTorrents } from './sources/solidtorrents'
 import { searchNyaa } from './sources/nyaa'
 import { getSeasonNow } from '../enrichment/myanimelist'
+import { animeCatalogTitles } from '../streams/catalog-titles'
+import { animeTorrentMatchesTitle, animeTorrentQueries, expandAnimeTitleAliases } from '../streams/title-aliases'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -44,7 +46,7 @@ interface MatchedTorrent {
 const PACK_PATTERNS = [
   /\bSeason\b/i,
   /\bComplete\b/i,
-  /S\d{2}E\d{2}-/i,
+  /S\d{1,2}E\d{1,3}\s*-/i,
   /\bS\d{1,2}\b(?!E)/i,
   /\bBATCH\b/i,
   /\b\d{1,3}\s*[~–]\s*\d{1,3}\b/i,
@@ -292,6 +294,7 @@ export async function fillGaps(
     const contentId = series.id
     const seriesTitle = series.title
     const isAnime = series.type === 'anime'
+    const catalogTitles = isAnime ? await animeCatalogTitles(series) : []
 
     // Cap episodes processed per candidate, per run (see constant above).
     const caps: SeasonGap[] = []
@@ -320,17 +323,15 @@ export async function fillGaps(
       for (const gap of gaps) {
         const targetSeason = gap.season > 0 ? gap.season : 1
         const searchTitle = gap.searchTitle ?? seriesTitle
+        const titles = gap.searchTitle ? expandAnimeTitleAliases([gap.searchTitle]) : catalogTitles
         const episodeOffset = gap.episodeOffset ?? 0
-        const queries = [searchTitle]
-        if (!/\bseason\b|\b\d+(?:st|nd|rd|th) season\b/i.test(searchTitle)) {
-          queries.push(`${searchTitle} S${padTwo(targetSeason)}`)
-        }
+        const queries = animeTorrentQueries(titles)
 
         const nyRes = new Map<string, RawTorrent>()
         for (const q of queries) {
           try {
             const results = await searchNyaa(q, 50)
-            for (const torrent of results) if (!nyRes.has(torrent.hash)) nyRes.set(torrent.hash, torrent)
+            for (const torrent of results) if (animeTorrentMatchesTitle(torrent.title, titles) && !nyRes.has(torrent.hash)) nyRes.set(torrent.hash, torrent)
           } catch (err) {
             console.warn(`[fillGaps] nyaa search failed for "${q}":`, (err as Error).message)
           }
@@ -340,7 +341,6 @@ export async function fillGaps(
         for (const torrent of nyRes.values()) {
           if ((torrent.seeds ?? 0) < 1) continue
           const parsed = parseRelease(torrent.title)
-          if (parsed.episode == null) continue
           const releaseSeason = parsed.season ?? explicitAnimeSeason(torrent.title)
           // Catálogos de anime frequentemente tratam cada entrada MAL como uma
           // série independente e rotulam a 2ª/3ª temporada canônica como S01.
@@ -351,6 +351,11 @@ export async function fillGaps(
             releaseSeason !== targetSeason &&
             !(gap.malId != null && releaseSeason === 1)
           ) continue
+          if (isPack(torrent.title)) {
+            matched.push({ torrent, season: targetSeason, episode: -1 })
+            continue
+          }
+          if (parsed.episode == null) continue
           const rawEpisode = Number(parsed.episode)
           const episode = missing.has(rawEpisode)
             ? rawEpisode
@@ -359,12 +364,15 @@ export async function fillGaps(
           matched.push({ torrent, season: targetSeason, episode })
         }
 
-        const packQuery = `${searchTitle} S${padTwo(targetSeason)}`
+        const packQuery = `${queries[0] ?? searchTitle} S${padTwo(targetSeason)}`
         try {
           const packResults = await searchNyaa(packQuery, 30)
           const viablePacks = packResults.filter((t) => {
             if (!isPack(t.title)) return false
             if ((t.seeds ?? 0) < 1) return false
+            if (!animeTorrentMatchesTitle(t.title, titles)) return false
+            const packSeason = parseRelease(t.title).season ?? explicitAnimeSeason(t.title)
+            if (packSeason != null && packSeason !== targetSeason && !(gap.malId != null && packSeason === 1)) return false
             return true
           })
           for (const pack of viablePacks) {

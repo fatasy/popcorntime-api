@@ -77,6 +77,10 @@ export async function getTV(id: number, language = 'pt-BR'): Promise<any> {
   })
 }
 
+export async function getTVAlternativeTitles(id: number): Promise<{ results?: { title?: string; type?: string }[] }> {
+  return tmdbGet(`/tv/${id}/alternative_titles`)
+}
+
 /**
  * Um episódio de temporada no TMDB. `still_path` é a ÚNICA fonte de imagem
  * por episódio disponível nos provedores já integrados (Jikan/MAL não expõe

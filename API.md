@@ -710,3 +710,7 @@ Para executar apenas a renovação e o enriquecimento, sem a manutenção de tor
 `GET /catalog?type=anime&genre=Xianxia%20%2F%20Wuxia` lista donghuas chineses da categoria; `type=series` lista produções com atores. Os filtros individuais `genre=Xianxia` e `genre=Wuxia` também são aceitos. A categoria reúne as duas tags confirmadas por keywords do TMDB; fantasia chinesa ou artes marciais, isoladamente, não classificam uma obra.
 
 O job de descoberta sincroniza até duas páginas por tipo de produção a cada seis horas, preservando IDs, traduções e fontes existentes. Também pode ser executado diretamente com `bun run src/jobs/chinese-fantasy.ts --force`. Donghuas usam `type=anime` e mantêm o ID de TV do TMDB para temporadas e episódios.
+
+### Nomes alternativos na busca de fontes de anime
+
+A coleta separa nomes compostos como `My Senior Brother Is Too Steady [Shixiong A Shixiong]`, consulta aliases de TV confirmados pelo TMDB e mantém qualificadores de temporada/parte. Nomes identificados como título da obra literária não são usados como aliases da animação. Resultados do Nyaa passam por comparação do título completo, para não vincular obras com nomes parecidos; pacotes encontrados na busca principal também são aceitos, inclusive intervalos com três dígitos por episódio.

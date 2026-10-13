@@ -3,10 +3,13 @@ import { db } from '../../db'
 import { anime_franchise_entries, contents, http_streams } from '../../types'
 import { animeHttpProviders, discoverAnimeHttpSources } from './providers'
 import type { ResolvedHttpStream } from './provider-types'
+import { animeCatalogTitles } from './catalog-titles'
+import { expandAnimeTitleAliases } from './title-aliases'
 
 export async function refreshAnimeHttpSources(contentId: number, target?: { season: number; episode: number }) {
   const [content] = await db.select().from(contents).where(eq(contents.id, contentId)).limit(1)
   if (!content || content.type !== 'anime') return { sourcesAdded: 0, sourceWarnings: [] as string[] }
+  const catalogTitles = await animeCatalogTitles(content)
   const franchise = await db.select().from(anime_franchise_entries)
     .where(eq(anime_franchise_entries.content_id, contentId))
     .orderBy(asc(anime_franchise_entries.season_number), asc(anime_franchise_entries.part_number))
@@ -15,8 +18,7 @@ export async function refreshAnimeHttpSources(contentId: number, target?: { seas
   let sourcesAdded = 0
   const sourceWarnings: string[] = []
   const root = entries[0]!
-  const seriesTitles = [content.title, content.original_title, root.title, root.title_english, root.title_japanese]
-    .filter((title): title is string => !!title)
+  const seriesTitles = expandAnimeTitleAliases([...catalogTitles, root.title, root.title_english, root.title_japanese])
   // Um refresh HTTP tem prazo próprio; não mantém o crawler preso indefinidamente.
   const signal = AbortSignal.timeout(90_000)
   for (const entry of entries) {
@@ -24,7 +26,8 @@ export async function refreshAnimeHttpSources(contentId: number, target?: { seas
     if (target && (entry.season_number !== target.season || target.episode <= entry.episode_offset ||
       (entry.episode_count != null && target.episode > entry.episode_offset + entry.episode_count))) continue
     try {
-      const titles = [entry.title, entry.title_english, entry.title_japanese].filter((title): title is string => !!title)
+      const titles = expandAnimeTitleAliases([entry.title, entry.title_english, entry.title_japanese,
+        ...(!franchise.length || entry === root ? catalogTitles : [])])
       const result = await discoverAnimeHttpSources({ titles, seriesTitles, season: entry.season_number,
         episodeOffset: entry.episode_offset, episodeCount: entry.episode_count,
         targetEpisode: target ? target.episode - entry.episode_offset : undefined }, signal)

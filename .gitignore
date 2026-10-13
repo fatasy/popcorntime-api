@@ -37,6 +37,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 /local-subtitles/
 /public/**/*.srt
 /public/**/*.vtt
+/public/*.apk
 
 # One-off production torrent lookup
 /mint.mts

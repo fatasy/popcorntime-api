@@ -1,4 +1,5 @@
 import { env } from '../../env'
+import { CHINESE_FANTASY_KEYWORD_IDS } from '../catalog/chinese-fantasy'
 
 const BASE = 'https://api.themoviedb.org/3'
 const IMAGE_BASE = 'https://image.tmdb.org/t/p'
@@ -64,7 +65,7 @@ export async function searchMulti(
 export async function getMovie(id: number, language = 'pt-BR'): Promise<any> {
   return tmdbGet(`/movie/${id}`, {
     language,
-    append_to_response: 'credits,external_ids',
+    append_to_response: 'credits,external_ids,keywords',
   })
 }
 
@@ -72,7 +73,7 @@ export async function getMovie(id: number, language = 'pt-BR'): Promise<any> {
 export async function getTV(id: number, language = 'pt-BR'): Promise<any> {
   return tmdbGet(`/tv/${id}`, {
     language,
-    append_to_response: 'credits,external_ids',
+    append_to_response: 'credits,external_ids,keywords',
   })
 }
 
@@ -218,6 +219,24 @@ export async function getAiringAnime(pages = 2): Promise<TmdbDiscoverItem[]> {
       with_genres: '16', with_original_language: 'ja',
       'air_date.gte': since.toISOString().slice(0, 10),
       'air_date.lte': today.toISOString().slice(0, 10),
+      sort_by: 'popularity.desc',
+    })
+    if (!data.results?.length) break
+    out.push(...data.results)
+    if (data.total_pages != null && page >= data.total_pages) break
+  }
+  return out
+}
+
+/** Separate discovery pages keep both donghua and live-action novels represented. */
+export async function discoverChineseFantasy(animated: boolean, pages = 2): Promise<TmdbDiscoverItem[]> {
+  const out: TmdbDiscoverItem[] = []
+  for (let page = 1; page <= pages; page++) {
+    const data = await tmdbGet<{ results?: TmdbDiscoverItem[]; total_pages?: number }>('/discover/tv', {
+      page, language: 'pt-BR', include_adult: 'false', with_origin_country: 'CN',
+      with_keywords: CHINESE_FANTASY_KEYWORD_IDS.join('|'),
+      ...(animated ? { with_genres: '16' } : { without_genres: '16' }),
+      'first_air_date.lte': new Date().toISOString().slice(0, 10),
       sort_by: 'popularity.desc',
     })
     if (!data.results?.length) break

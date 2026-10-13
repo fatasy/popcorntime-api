@@ -31,6 +31,7 @@ import { fillGaps } from '../collection/fill-gaps'
 import { importExternalCatalog, searchExternalCatalog } from './external'
 import { countHttpEpisodeSources, refreshAnimeHttpSources } from '../streams/service'
 import { CURRENT_RANK_SQL } from './popularity'
+import { chineseFantasyFilterGenres } from './chinese-fantasy'
 
 // Evita que dois cliques (ou dois dispositivos) disparem o mesmo crawler em
 // paralelo para um título. Todos aguardam a execução já em curso.
@@ -184,7 +185,7 @@ const GENRE_ALIASES: Record<string, string[]> = {
 
 /** Condição "o conteúdo tem o gênero pedido (ou um sinônimo em outro idioma)". */
 function genreFilter(genre: string): SQL {
-  const aliases = GENRE_ALIASES[genre] ?? [genre]
+  const aliases = chineseFantasyFilterGenres(genre) ?? GENRE_ALIASES[genre] ?? [genre]
   const ors = aliases.map((g) => sql`${g} = ANY(${contents.genres})`)
   return ors.length === 1 ? ors[0]! : or(...ors)!
 }

@@ -1,4 +1,4 @@
-import { and, eq, isNull, or } from 'drizzle-orm'
+import { and, eq, inArray, isNull, or } from 'drizzle-orm'
 import { db } from '../../db'
 import {
   anime_franchise_entries,
@@ -16,6 +16,7 @@ import {
 import { getAnime, searchAnime, type JikanAnime } from '../enrichment/myanimelist'
 import { resolveCanonicalContentId } from '../anime/franchise'
 import { refreshCatalogContent } from './refresh'
+import { isChineseAnimation } from './chinese-fantasy'
 
 export type ExternalCatalogProvider = 'tmdb' | 'jikan'
 export type ExternalCatalogMediaType = 'movie' | 'tv' | 'anime'
@@ -76,7 +77,7 @@ function mapTmdbSearch(item: TmdbSearchResult): RawExternalCatalogResult | null 
     provider: 'tmdb',
     externalId: item.id,
     mediaType: item.media_type,
-    type: item.media_type === 'movie' ? 'movie' : 'series',
+    type: item.media_type === 'movie' ? 'movie' : isChineseAnimation(item) ? 'anime' : 'series',
     title,
     originalTitle: item.original_title ?? item.original_name ?? null,
     year: yearFromDate(releaseDate),
@@ -181,7 +182,8 @@ async function existingContentId(item: RawExternalCatalogResult): Promise<number
   const [content] = await db
     .select({ id: contents.id })
     .from(contents)
-    .where(and(eq(contents.tmdb_id, item.externalId), eq(contents.type, item.type)))
+    .where(and(eq(contents.tmdb_id, item.externalId), item.mediaType === 'tv'
+      ? inArray(contents.type, ['series', 'anime']) : eq(contents.type, item.type)))
     .limit(1)
   return content ? resolveCanonicalContentId(content.id) : null
 }
@@ -301,7 +303,7 @@ async function importOnce(
     const mapped = mapTmdb(details, input.mediaType)
     if (!mapped.title) throw new Error('External catalog returned a title without a name')
     values = {
-      type: input.mediaType === 'movie' ? 'movie' : 'series',
+      type: input.mediaType === 'movie' ? 'movie' : isChineseAnimation(details) ? 'anime' : 'series',
       title: mapped.title,
       ...mapped,
       enriched_at: new Date(),

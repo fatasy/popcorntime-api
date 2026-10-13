@@ -16,6 +16,7 @@ import {
 import { getSeasonNow, getTopAiring } from '../modules/enrichment/myanimelist'
 import type { JikanAnime } from '../modules/enrichment/myanimelist'
 import { consolidateAnimeFranchise } from '../modules/anime/franchise'
+import { syncChineseFantasyCatalog } from './chinese-fantasy'
 
 // ─── helpers ────────────────────────────────────────────────────────
 
@@ -376,6 +377,9 @@ export async function runDiscovery(): Promise<{
   torrents: number
 }> {
   console.log('=== Discovery job start ===')
+
+  try { await syncChineseFantasyCatalog() }
+  catch (error) { console.error('[discover] Chinese fantasy failed:', (error as Error).message) }
 
   let totalTorrents = 0
   let totalMovies = 0

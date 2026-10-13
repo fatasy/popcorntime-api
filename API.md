@@ -704,3 +704,9 @@ Quando Jikan falha, a faixa de animes usa a ordem de popularidade do TMDB para a
 `/catalog?sort=popular` prioriza o ranking persistido atual, inclusive nas categorias e gêneros; seeds continuam como desempate e fallback. `sort=rating` continua ordenando por nota. O pipeline também procura fontes de até seis títulos atuais sem torrents por execução, com intervalo de seis horas por título e sem consultar lançamentos futuros. Enriquecimento usa IDs externos conhecidos diretamente, evitando trocar a identidade da obra pela busca textual.
 
 Para executar apenas a renovação e o enriquecimento, sem a manutenção de torrents: `bun run src/jobs/refresh-home.ts`.
+
+### Xianxia / Wuxia
+
+`GET /catalog?type=anime&genre=Xianxia%20%2F%20Wuxia` lista donghuas chineses da categoria; `type=series` lista produções com atores. Os filtros individuais `genre=Xianxia` e `genre=Wuxia` também são aceitos. A categoria reúne as duas tags confirmadas por keywords do TMDB; fantasia chinesa ou artes marciais, isoladamente, não classificam uma obra.
+
+O job de descoberta sincroniza até duas páginas por tipo de produção a cada seis horas, preservando IDs, traduções e fontes existentes. Também pode ser executado diretamente com `bun run src/jobs/chinese-fantasy.ts --force`. Donghuas usam `type=anime` e mantêm o ID de TV do TMDB para temporadas e episódios.

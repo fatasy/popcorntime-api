@@ -315,7 +315,11 @@ async function findByExternalId(item: TrendingProviderItem, externalId: number):
   return db
     .select()
     .from(contents)
-    .where(and(eq(contents.type, item.type), eq(externalIdColumn(item.source), externalId)))
+    .where(and(
+      item.source === 'tmdb' && item.type !== 'movie'
+        ? inArray(contents.type, ['series', 'anime']) : eq(contents.type, item.type),
+      eq(externalIdColumn(item.source), externalId),
+    ))
     .orderBy(...canonicalFirst())
 }
 

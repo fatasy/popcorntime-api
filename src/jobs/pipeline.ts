@@ -9,6 +9,7 @@ import { runDiscovery } from './discover'
 import { preResolveTorrentMetadata } from '../modules/torrent/pre-resolve'
 import { refreshTrendingCatalog } from '../modules/catalog/trending'
 import { collectHomeSources } from './collect-home-sources'
+import { collectChineseFantasySources } from './chinese-fantasy-sources'
 
 const CATEGORIES: Category[] = ['movies', 'series', 'anime']
 
@@ -98,6 +99,9 @@ export async function runPipeline(): Promise<void> {
   } catch (err) {
     console.error('[pipeline] current-title source collection failed:', err)
   }
+
+  try { await collectChineseFantasySources() }
+  catch (error) { console.error('[pipeline] Chinese fantasy source collection failed:', error) }
 
   console.log('\n[3/3] Grouping ungrouped torrents…')
   let grouped = { matched: 0, created: 0 }

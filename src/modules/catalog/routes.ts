@@ -30,7 +30,7 @@ import { resolveCanonicalContentId } from '../anime/franchise'
 import { fillGaps } from '../collection/fill-gaps'
 import { importExternalCatalog, searchExternalCatalog } from './external'
 import { countHttpEpisodeSources, refreshAnimeHttpSources } from '../streams/service'
-import { CURRENT_RANK_SQL } from './popularity'
+import { CHINESE_FANTASY_RANK_SQL, CURRENT_RANK_SQL } from './popularity'
 import { chineseFantasyFilterGenres } from './chinese-fantasy'
 
 // Evita que dois cliques (ou dois dispositivos) disparem o mesmo crawler em
@@ -245,6 +245,7 @@ const POPULARITY_SQL = sql<number>`
 
 interface ListOptions {
   filters: SQL[]
+  genre?: string
   sort: SortKey | 'popular'
   order: 'asc' | 'desc'
   page: number
@@ -257,6 +258,7 @@ async function listContents(opts: ListOptions) {
 
   // Current external rankings first; primary torrent seeds remain the fallback.
   const isPopular = opts.sort === 'popular'
+  const ranking = chineseFantasyFilterGenres(opts.genre ?? '') ? CHINESE_FANTASY_RANK_SQL : CURRENT_RANK_SQL
   const sortCol = isPopular ? POPULARITY_SQL : (SORT_COLUMNS[opts.sort as SortKey] ?? contents.created_at)
   const orderBy = opts.order === 'asc' ? asc(sortCol) : desc(sortCol)
 
@@ -264,7 +266,7 @@ async function listContents(opts: ListOptions) {
     .select()
     .from(contents)
     .where(where)
-    .orderBy(...(isPopular ? [opts.order === 'asc' ? asc(CURRENT_RANK_SQL) : desc(CURRENT_RANK_SQL)] : []), orderBy, desc(contents.id))
+    .orderBy(...(isPopular ? [opts.order === 'asc' ? asc(ranking) : desc(ranking)] : []), orderBy, desc(contents.id))
     .limit(opts.limit)
     .offset(offset)
 
@@ -324,7 +326,7 @@ export const catalogRoutes = new Elysia()
       const isValidSort = query.sort === 'popular' || (query.sort != null && query.sort in SORT_COLUMNS)
       const sort = isValidSort ? (query.sort as SortKey | 'popular') : 'created_at'
       const order = query.order === 'asc' ? 'asc' : 'desc'
-      const { data, total } = await listContents({ filters, sort, order, page, limit })
+      const { data, total } = await listContents({ filters, genre: query.genre, sort, order, page, limit })
       return { data, meta: { page, limit, total } }
     },
     {

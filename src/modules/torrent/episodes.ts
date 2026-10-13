@@ -521,7 +521,7 @@ async function resolveWithTmdb(
   for (const t of linked) {
     const coverage = coverageResults.get(t.torrent_id)
 
-    if (t.episode == null) {
+    if (t.episode == null && t.season != null) {
       const indexed = indexedPackEpisodes(t.file_list, {
         linkedSeason: t.season, singleSeasonAnime: isAnime && seasons.filter((season: any) => season.season_number > 0).length === 1,
         isEpisodeFile, episodeNumber: episodeNumberFromFileName,

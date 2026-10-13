@@ -43,7 +43,9 @@ export function animeTorrentQueries(titles: string[], limit = 4): string[] {
   const queries = animeSourceQueries(titles, 100)
   const primary = queries[0]
   // Very short alternate English names can match unrelated anime or reality shows.
-  return queries.filter((title) => title === primary || !/[a-z]/i.test(title) || key(title).split(' ').length >= 3).slice(0, limit)
+  const ambiguous = new Set(['big brother', 'senior brother', 'brother', 'my brother'])
+  return queries.filter((title) => !ambiguous.has(key(title)) &&
+    (title === primary || !/[a-z]/i.test(title) || key(title).split(' ').length >= 2)).slice(0, limit)
 }
 
 /** Search engines can return similarly named works; require a complete known title. */

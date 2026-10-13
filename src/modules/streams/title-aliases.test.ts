@@ -52,4 +52,5 @@ test('standard fansub separators and title punctuation remain valid', () => {
   assert.equal(animeTorrentMatchesTitle('[Group] Re:Zero - S01E01 [1080p]', ['Re:Zero']), true)
   assert.equal(animeTorrentMatchesTitle('[Group] Example2 - 01 [1080p]', ['Example']), false)
   assert.equal(animeTorrentMatchesTitle('[Group] Example 2 - 01 [1080p]', ['Example']), false)
+  assert.equal(animeTorrentMatchesTitle('[Group] Xian Ni - 01 [1080p]', ['Renegade Immortal', 'Xian Ni']), true)
 })
